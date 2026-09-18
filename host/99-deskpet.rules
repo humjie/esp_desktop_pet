@@ -1,0 +1,3 @@
+# Desk Pet (ESP32-S3-BOX-3) — allow the normal user to access the USB serial/JTAG port
+# Covers both flashing (idf.py) and the runtime host service writing /dev/ttyACM0.
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0666", GROUP="dialout"

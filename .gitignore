@@ -1,0 +1,22 @@
+# ESP-IDF build output and temporary files
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig.old
+
+# Python virtual environment and cache
+host/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Local logs and user config
+.config/
+.local/
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~

@@ -1,0 +1,17 @@
+[Unit]
+Description=Desk Pet host — ESP32-S3-BOX-3 companion (agent state + system load over USB)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=humjie
+SupplementaryGroups=dialout
+WorkingDirectory=/home/humjie/fun/deskpet/host
+ExecStart=/home/humjie/fun/deskpet/host/.venv/bin/python /home/humjie/fun/deskpet/host/deskpet_host.py
+Restart=always
+RestartSec=3
+Environment=HOME=/home/humjie
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
