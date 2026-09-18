@@ -222,15 +222,6 @@ def action_rgb_toggle():
                 text=True,
             )
             log.info("OpenRGB profile loaded: code=%d stdout='%s'", res.returncode, res.stdout.strip())
-            # Ensure direct mode fallback if needed
-            mode_arg = "rainbow" if s_rgb_on else "off"
-            subprocess.run(
-                ["/usr/local/bin/openrgb", "--noautoconnect", "-m", mode_arg],
-                check=False,
-                timeout=10,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
         except Exception as e:  # noqa: BLE001
             log.warning("OpenRGB execution failed: %s", e)
     finally:
