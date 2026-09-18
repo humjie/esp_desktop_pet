@@ -65,12 +65,12 @@ void telemetry_parse_line(const char *line)
     // 3: ram_used_mb
     token = strtok_r(NULL, ",\r\n", &saveptr);
     if (!token) return;
-    int ram_used = atoi(token);
+    float ram_used = strtof(token, NULL);
 
     // 4: ram_total_mb
     token = strtok_r(NULL, ",\r\n", &saveptr);
     if (!token) return;
-    int ram_total = atoi(token);
+    float ram_total = strtof(token, NULL);
 
     // 5: gpu_pct
     token = strtok_r(NULL, ",\r\n", &saveptr);
@@ -85,12 +85,12 @@ void telemetry_parse_line(const char *line)
     // 7: vram_used_mb
     token = strtok_r(NULL, ",\r\n", &saveptr);
     if (!token) return;
-    int vram_used = atoi(token);
+    float vram_used = strtof(token, NULL);
 
     // 8: vram_total_mb
     token = strtok_r(NULL, ",\r\n", &saveptr);
     if (!token) return;
-    int vram_total = atoi(token);
+    float vram_total = strtof(token, NULL);
 
     if (s_telemetry_mutex && xSemaphoreTake(s_telemetry_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         s_telemetry.epoch_utc = epoch;
@@ -104,7 +104,7 @@ void telemetry_parse_line(const char *line)
         s_telemetry.last_received_us = esp_timer_get_time();
         s_telemetry.has_data = true;
         xSemaphoreGive(s_telemetry_mutex);
-        ESP_LOGD(TAG, "Parsed PET: cpu=%d%% ram=%d/%dMB gpu=%d%% temp=%dC vram=%d/%dMB",
+        ESP_LOGD(TAG, "Parsed PET: cpu=%d%% ram=%.1f/%.1fMB gpu=%d%% temp=%dC vram=%.1f/%.1fMB",
                  cpu, ram_used, ram_total, gpu, gpu_temp, vram_used, vram_total);
     }
 }

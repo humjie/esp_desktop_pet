@@ -368,13 +368,6 @@ static void create_ai_screen(void)
     create_metric_row(s_scr_ai, 152, "VRAM", lv_color_hex(0xBF5AF2), &s_vram_val, &s_vram_bar);
     create_metric_row(s_scr_ai, 190, "TEMP", lv_color_hex(0xFF453A), &s_temp_val, &s_temp_bar);
 
-    /* Footer Hint */
-    lv_obj_t *hint = lv_label_create(s_scr_ai);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x636366), 0);
-    lv_label_set_text(hint, "TAP ANYWHERE TO EXIT");
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
-
     /* Transparent full-screen touch overlay */
     add_touch_overlay(s_scr_ai);
 }
@@ -607,12 +600,12 @@ static void telemetry_update_tick(void)
     lv_bar_set_value(s_cpu_bar, t.cpu_pct, LV_ANIM_OFF);
 
     // RAM (label in GB; bar keeps MB range)
-    snprintf(buf, sizeof(buf), "%.1f / %.1f GB",
+    snprintf(buf, sizeof(buf), "%.2f / %.2f GB",
              (t.ram_used_mb / 1024.0f), (t.ram_total_mb / 1024.0f));
     lv_label_set_text(s_ram_val, buf);
-    int ram_max = (t.ram_total_mb > 0) ? t.ram_total_mb : 100;
+    int ram_max = (t.ram_total_mb > 0) ? (int)t.ram_total_mb : 100;
     lv_bar_set_range(s_ram_bar, 0, ram_max);
-    lv_bar_set_value(s_ram_bar, t.ram_used_mb, LV_ANIM_OFF);
+    lv_bar_set_value(s_ram_bar, (int)t.ram_used_mb, LV_ANIM_OFF);
 
     // GPU
     snprintf(buf, sizeof(buf), "%d %%", t.gpu_pct);
@@ -626,12 +619,12 @@ static void telemetry_update_tick(void)
     lv_bar_set_value(s_temp_bar, t.gpu_temp_c, LV_ANIM_OFF);
 
     // VRAM (label in GB; bar keeps MB range)
-    snprintf(buf, sizeof(buf), "%.1f / %.1f GB",
+    snprintf(buf, sizeof(buf), "%.2f / %.2f GB",
              (t.vram_used_mb / 1024.0f), (t.vram_total_mb / 1024.0f));
     lv_label_set_text(s_vram_val, buf);
-    int vram_max = (t.vram_total_mb > 0) ? t.vram_total_mb : 100;
+    int vram_max = (t.vram_total_mb > 0) ? (int)t.vram_total_mb : 100;
     lv_bar_set_range(s_vram_bar, 0, vram_max);
-    lv_bar_set_value(s_vram_bar, t.vram_used_mb, LV_ANIM_OFF);
+    lv_bar_set_value(s_vram_bar, (int)t.vram_used_mb, LV_ANIM_OFF);
 }
 
 /* Master UI Timer Callback (40ms interval = 25 FPS) */

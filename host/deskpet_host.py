@@ -72,23 +72,23 @@ def read_ram():
     (reclaimable slab is counted toward the cache/available portion, not as
     used app memory). Mirror that so the pet agrees with htop.
     """
-    total = free = buffers = cached = sreclaim = used = 0
+    total = free = buffers = cached = sreclaim = used = 0.0
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemTotal"):
-                    total = int(line.split()[1]) // 1024
+                    total = int(line.split()[1]) / 1024.0
                 elif line.startswith("MemFree"):
-                    free = int(line.split()[1]) // 1024
+                    free = int(line.split()[1]) / 1024.0
                 elif line.startswith("Buffers"):
-                    buffers = int(line.split()[1]) // 1024
+                    buffers = int(line.split()[1]) / 1024.0
                 elif line.startswith("Cached"):
-                    cached = int(line.split()[1]) // 1024
+                    cached = int(line.split()[1]) / 1024.0
                 elif line.startswith("SReclaimable"):
-                    sreclaim = int(line.split()[1]) // 1024
+                    sreclaim = int(line.split()[1]) / 1024.0
         used = total - free - buffers - cached - sreclaim
         if used < 0:
-            used = 0
+            used = 0.0
     except Exception:  # noqa: BLE001
         pass
     return used, total
@@ -172,8 +172,8 @@ def open_serial():
 
 
 def make_line(epoch, cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t):
-    return ("PET,%d,%.1f,%d,%d,%.1f,%.1f,%.1f,%.1f\n"
-            % (int(epoch), cpu, int(ram_u), int(ram_t), gpu, gpu_temp, vram_u, vram_t))
+    return ("PET,%d,%.1f,%.2f,%.2f,%.1f,%.1f,%.2f,%.2f\n"
+            % (int(epoch), cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t))
 
 
 def main():
@@ -205,8 +205,8 @@ def main():
             gpu, gpu_temp, vram_u, vram_t = read_gpu()
 
             line = make_line(epoch, cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t)
-            log.info("cpu=%4.1f%% ram=%d/%dMB gpu=%4.1f%% temp=%5.1fC vram=%.0f/%.0fMB",
-                     cpu, int(ram_u), int(ram_t), gpu, gpu_temp, vram_u, vram_t)
+            log.info("cpu=%4.1f%% ram=%.1f/%.1fMB gpu=%4.1f%% temp=%5.1fC vram=%.0f/%.0fMB",
+                     cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t)
 
             if ser is None:
                 ser = open_serial()
