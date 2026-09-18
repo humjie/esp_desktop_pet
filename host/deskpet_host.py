@@ -16,9 +16,11 @@ link is ignored by the pet (firmware logs may appear — they are ignored).
 
 import os
 import sys
+import glob
 import time
 import signal
 import logging
+import colorsys
 import threading
 import subprocess
 import configparser
@@ -189,6 +191,103 @@ s_night_lock = threading.Lock()
 s_rgb_on = False  # Start False so first tap turns on Rainbow mode!
 s_night_mode = False
 
+s_fan_thread = None
+s_fan_stop_event = threading.Event()
+
+
+def find_aura_hidraw():
+    for dev_path in glob.glob('/sys/class/hidraw/hidraw*'):
+        try:
+            uevent_file = os.path.join(dev_path, 'device', 'uevent')
+            if os.path.exists(uevent_file):
+                with open(uevent_file) as f:
+                    content = f.read()
+                if '0B05:1BED' in content.upper() or '0B05' in content.upper():
+                    return '/dev/' + os.path.basename(dev_path)
+        except Exception:
+            pass
+    return '/dev/hidraw4'
+
+
+def _send_aura_pkt(f, data):
+    buf = bytearray(65)
+    for i, b in enumerate(data):
+        buf[i] = b
+    f.write(buf)
+
+
+def _send_aura_channel_colors(f, ch_id, colors_rgb):
+    for pkt_idx in range(6):
+        offset = pkt_idx * 20
+        is_last = (pkt_idx == 5)
+        ch_byte = (0x80 if is_last else 0x00) | (ch_id & 0x7F)
+        buf = bytearray(65)
+        buf[0] = 0xEC
+        buf[1] = 0x40
+        buf[2] = ch_byte
+        buf[3] = offset
+        buf[4] = 20
+        for i in range(20):
+            led_idx = offset + i
+            r, g, b = colors_rgb[led_idx] if led_idx < len(colors_rgb) else (0, 0, 0)
+            buf[5 + i*3] = r
+            buf[6 + i*3] = g
+            buf[7 + i*3] = b
+        f.write(buf)
+
+
+def _turn_off_fans():
+    try:
+        dev = find_aura_hidraw()
+        with open(dev, 'rb+', buffering=0) as f:
+            for ch in range(3):
+                _send_aura_channel_colors(f, ch, [(0, 0, 0)] * 120)
+            for ch in [0x00, 0x01, 0x10, 0x11, 0x12]:
+                _send_aura_pkt(f, [0xEC, 0x35, ch, 0x00, 0x00, 0x00])
+            _send_aura_pkt(f, [0xEC, 0x3F, 0x55])
+    except Exception as e:
+        log.warning("Failed to turn off fans: %s", e)
+
+
+def _fan_animate_worker():
+    dev = find_aura_hidraw()
+    try:
+        with open(dev, 'rb+', buffering=0) as f:
+            # Initialize ARGB headers for 120 LEDs
+            _send_aura_pkt(f, [0xEC, 0x31, 0x04, 0x20, 0x00, 0x78, 0x25, 0xFF, 0xFF, 0xFF])
+            _send_aura_pkt(f, [0xEC, 0x31, 0x05, 0x21, 0x00, 0x78, 0x25, 0xFF, 0xFF, 0xFF])
+            _send_aura_pkt(f, [0xEC, 0x31, 0x06, 0x22, 0x00, 0x78, 0x25, 0xFF, 0xFF, 0xFF])
+            _send_aura_pkt(f, [0xEC, 0x3F, 0xAA])
+            _send_aura_pkt(f, [0xEC, 0x3F, 0x55])
+            time.sleep(0.02)
+
+            for ch in [0x00, 0x01, 0x10, 0x11, 0x12]:
+                _send_aura_pkt(f, [0xEC, 0x35, ch, 0x00, 0x00, 0xFF])
+            time.sleep(0.02)
+
+            step = 0
+            while not s_fan_stop_event.is_set():
+                colors = []
+                for i in range(120):
+                    h = ((i + step) / 36.0) % 1.0
+                    r, g, b = colorsys.hsv_to_rgb(h, 1.0, 1.0)
+                    colors.append((int(r * 255), int(g * 255), int(b * 255)))
+
+                for ch in range(3):
+                    _send_aura_channel_colors(f, ch, colors)
+
+                step = (step + 1) % 36
+                time.sleep(0.04)
+
+            # When exiting loop, turn off fans
+            for ch in range(3):
+                _send_aura_channel_colors(f, ch, [(0, 0, 0)] * 120)
+            for ch in [0x00, 0x01, 0x10, 0x11, 0x12]:
+                _send_aura_pkt(f, [0xEC, 0x35, ch, 0x00, 0x00, 0x00])
+            _send_aura_pkt(f, [0xEC, 0x3F, 0x55])
+    except Exception as e:
+        log.warning("Fan RGB animation error: %s", e)
+
 
 def ensure_desktop_env():
     """Ensure graphical session environment variables exist for child processes."""
@@ -204,26 +303,57 @@ def ensure_desktop_env():
 
 
 def action_rgb_toggle():
-    global s_rgb_on
+    global s_rgb_on, s_fan_thread
     if not s_rgb_lock.acquire(blocking=False):
         log.info("[ACTION] RGB command already in progress, skipping duplicate request")
         return
     try:
         ensure_desktop_env()
         s_rgb_on = not s_rgb_on
-        profile = "rainbow.orp" if s_rgb_on else "off.orp"
-        log.info("[ACTION] RGB toggle -> %s (state=%s)", profile, s_rgb_on)
-        try:
-            res = subprocess.run(
-                ["/usr/local/bin/openrgb", "--noautoconnect", "--profile", profile],
-                check=False,
-                timeout=15,
-                capture_output=True,
-                text=True,
-            )
-            log.info("OpenRGB profile loaded: code=%d stdout='%s'", res.returncode, res.stdout.strip())
-        except Exception as e:  # noqa: BLE001
-            log.warning("OpenRGB execution failed: %s", e)
+        log.info("[ACTION] RGB toggle -> state=%s", s_rgb_on)
+
+        if s_rgb_on:
+            # 1. Start animated rainbow worker for motherboard fan headers immediately
+            if s_fan_thread is not None and s_fan_thread.is_alive():
+                s_fan_stop_event.set()
+                s_fan_thread.join(timeout=1.0)
+            s_fan_stop_event.clear()
+            s_fan_thread = threading.Thread(target=_fan_animate_worker, daemon=True)
+            s_fan_thread.start()
+
+            # 2. Turn on RAM via OpenRGB into hardware Rainbow mode
+            try:
+                subprocess.run(
+                    ["/usr/local/bin/openrgb", "--noautoconnect",
+                     "-d", "0", "-m", "rainbow",
+                     "-d", "1", "-m", "rainbow"],
+                    check=False,
+                    timeout=10,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as e:
+                log.warning("OpenRGB RAM rainbow failed: %s", e)
+        else:
+            # 1. Stop animated fan worker and ensure fans are turned off
+            if s_fan_thread is not None and s_fan_thread.is_alive():
+                s_fan_stop_event.set()
+                s_fan_thread.join(timeout=1.0)
+            _turn_off_fans()
+
+            # 2. Turn off RAM via OpenRGB
+            try:
+                subprocess.run(
+                    ["/usr/local/bin/openrgb", "--noautoconnect",
+                     "-d", "0", "-m", "off",
+                     "-d", "1", "-m", "off"],
+                    check=False,
+                    timeout=10,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as e:
+                log.warning("OpenRGB RAM off failed: %s", e)
     finally:
         s_rgb_lock.release()
 
