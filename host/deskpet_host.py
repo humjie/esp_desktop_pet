@@ -68,25 +68,29 @@ log = logging.getLogger("deskpet")
 def read_ram():
     """Return (used_mb, total_mb) matching htop's "used" value.
 
-    htop computes used = MemTotal - MemFree - Buffers - Cached - SReclaimable
-    (reclaimable slab is counted toward the cache/available portion, not as
-    used app memory). Mirror that so the pet agrees with htop.
+    htop computes used = MemTotal - MemFree - Buffers - (Cached + SReclaimable - Shmem)
+    = MemTotal - MemFree - Buffers - Cached - SReclaimable + Shmem
+    (shared memory like tmpfs/shm is accounted under Cached in /proc/meminfo
+    but is unreclaimable, so htop adds it back to used application memory).
+    Mirror that so the pet agrees with htop.
     """
-    total = free = buffers = cached = sreclaim = used = 0.0
+    total = free = buffers = cached = sreclaim = shmem = used = 0.0
     try:
         with open("/proc/meminfo") as f:
             for line in f:
-                if line.startswith("MemTotal"):
+                if line.startswith("MemTotal:"):
                     total = int(line.split()[1]) / 1024.0
-                elif line.startswith("MemFree"):
+                elif line.startswith("MemFree:"):
                     free = int(line.split()[1]) / 1024.0
-                elif line.startswith("Buffers"):
+                elif line.startswith("Buffers:"):
                     buffers = int(line.split()[1]) / 1024.0
-                elif line.startswith("Cached"):
+                elif line.startswith("Cached:"):
                     cached = int(line.split()[1]) / 1024.0
-                elif line.startswith("SReclaimable"):
+                elif line.startswith("SReclaimable:"):
                     sreclaim = int(line.split()[1]) / 1024.0
-        used = total - free - buffers - cached - sreclaim
+                elif line.startswith("Shmem:"):
+                    shmem = int(line.split()[1]) / 1024.0
+        used = total - free - buffers - cached - sreclaim + shmem
         if used < 0:
             used = 0.0
     except Exception:  # noqa: BLE001
