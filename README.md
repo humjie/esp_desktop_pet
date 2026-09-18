@@ -20,9 +20,9 @@ Inspired by [Tabbie](https://github.com/humjie/tabbie), Desk Pet expresses dynam
   - ❤️ **Hot / Spicy (Crimson `#FF453A`)**: Furrowed angry brows and frown arc `(>_<)` when GPU temperature hits ≥70°C or heavy load spikes.
 - **📊 Real-Time Workstation Telemetry (1 Hz streaming)**:
   - **CPU %**: Utilization delta sampled over `/proc/stat`.
-  - **RAM (GB)**: Accurate usage matching `htop` (`MemTotal - MemFree - Buffers - Cached - SReclaimable`).
+  - **RAM (GB)**: High-precision usage matching `htop`'s exact formula (`MemTotal - MemFree - Buffers - (Cached + SReclaimable - Shmem)`) displayed to **two decimal places** (`%.2f / %.2f GB`).
   - **GPU %**: Live NVIDIA GPU compute utilization.
-  - **VRAM (GB)**: Accurate memory matching `nvtop` (`memory.total - memory.free`).
+  - **VRAM (GB)**: Memory usage matching `nvtop` (`memory.total - memory.free`) displayed to **two decimal places** (`%.2f / %.2f GB`).
   - **GPU Temp (°C)**: Thermal monitoring with color-coded warning range.
   - **Clock & Date Sync**: Synced continuously from workstation UTC time (converted to UTC+8 local time).
 - **⚡ Automatic Boot & Reconnect**:
@@ -52,7 +52,7 @@ deskpet/
 │   ├── deskpet.service             # systemd unit for automatic startup on boot
 │   ├── 99-deskpet.rules            # udev rule for world-writable /dev/ttyACM0
 │   ├── install.sh                  # One-step host installation script
-│   └── .venv/                      # Python 3.11 virtual environment (pyserial)
+│   └── .venv/                      # Python virtual environment (pyserial)
 ├── HANDOFF.md                      # Architecture & hardware notes
 ├── .gitignore                      # Git ignore rules
 └── README.md                       # Documentation
@@ -71,17 +71,18 @@ deskpet/
 Run the installer to configure the `udev` rule and enable the `systemd` service:
 
 ```bash
-cd /home/humjie/fun/deskpet/host
+cd host
 sudo ./install.sh
 ```
 
 Or manually:
 ```bash
 # 1. Install udev rule
-sudo cp 99-deskpet.rules /etc/udev/rules.d/
+sudo cp host/99-deskpet.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 
 # 2. Set up Python virtualenv
+cd host
 python3 -m venv .venv
 .venv/bin/pip install pyserial
 
@@ -103,18 +104,17 @@ Activate the ESP-IDF environment and flash the board:
 
 ```bash
 # 1. Activate ESP-IDF
-export PATH=/home/humjie/.local/share/uv/python/cpython-3.11-linux-x86_64-gnu/bin:$PATH
-source /home/humjie/esp/esp-idf/export.sh
+source /path/to/esp-idf/export.sh
 
 # 2. Build firmware
-cd /home/humjie/fun/deskpet/firmware
+cd firmware
 idf.py build
 
 # 3. Flash to ESP32-S3-BOX-3
 idf.py -p /dev/ttyACM0 flash
 ```
 
-> **Note**: If `deskpet.service` is actively streaming over `/dev/ttyACM0`, pause the service or stop it before flashing so both processes do not conflict on the serial port:
+> **Note**: If `deskpet.service` is actively streaming over `/dev/ttyACM0`, pause or stop the service before flashing so both processes do not conflict on the serial port:
 > ```bash
 > sudo systemctl stop deskpet
 > idf.py -p /dev/ttyACM0 flash
@@ -133,7 +133,7 @@ PET,<epoch_utc>,<cpu_pct>,<ram_used_mb>,<ram_total_mb>,<gpu_pct>,<gpu_temp_c>,<v
 
 Example packet:
 ```text
-PET,1787344120,12.5,7320,63447,25.0,45.0,960,16311
+PET,1787344120,12.5,5428.20,63447.80,25.0,45.0,960.00,16311.00
 ```
 
 - Firmware filters strictly for lines prefixed with `PET,` (firmware log messages on the same port are safely ignored).
