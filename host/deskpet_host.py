@@ -251,33 +251,6 @@ def action_night_toggle():
             log.warning("ddcutil display %s failed: %s", disp, e)
 
 
-def action_hermes_toggle():
-    ensure_desktop_env()
-    # Check if Hermes Electron app is running
-    res = subprocess.run(
-        ["pgrep", "-f", "apps/desktop/release/linux-unpacked/Hermes"],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode == 0:
-        log.info("[ACTION] Hermes toggle -> Closing Hermes Desktop")
-        subprocess.run(["pkill", "-f", "apps/desktop/release/linux-unpacked/Hermes"], check=False)
-        subprocess.run(["pkill", "-f", "hermes desktop"], check=False)
-    else:
-        log.info("[ACTION] Hermes toggle -> Launching Hermes Desktop in background")
-        try:
-            subprocess.Popen(
-                ["/home/humjie/.local/bin/hermes", "desktop"],
-                cwd=os.path.expanduser("~"),
-                env=os.environ,
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception as e:  # noqa: BLE001
-            log.warning("Hermes desktop launch failed: %s", e)
-
-
 def handle_device_command(cmd_line):
     cmd = cmd_line.strip()
     log.info("[DEVICE CMD] %s", cmd)
@@ -285,8 +258,6 @@ def handle_device_command(cmd_line):
         threading.Thread(target=action_rgb_toggle, daemon=True).start()
     elif cmd == "CMD,NIGHT_TOGGLE":
         threading.Thread(target=action_night_toggle, daemon=True).start()
-    elif cmd == "CMD,HERMES_TOGGLE":
-        threading.Thread(target=action_hermes_toggle, daemon=True).start()
 
 
 def main():

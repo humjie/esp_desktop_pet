@@ -162,20 +162,11 @@ static void quad_top_right_cb(lv_event_t *e)
     fflush(stdout);
 }
 
-/* Bottom-Left: Hermes Desktop Toggle */
-static void quad_bottom_left_cb(lv_event_t *e)
-{
-    s_love_countdown = 60; // Momentary sweet reaction
-    printf("CMD,HERMES_TOGGLE\n");
-    fflush(stdout);
-    ESP_LOGI(TAG, "Touch [Bottom-Left]: Toggled Hermes Desktop");
-}
-
-/* Bottom-Right: Switch to System Status screen */
-static void quad_bottom_right_cb(lv_event_t *e)
+/* Bottom Row: Switch to System Status screen */
+static void bottom_row_status_cb(lv_event_t *e)
 {
     lv_scr_load(s_scr_ai);
-    ESP_LOGI(TAG, "Touch [Bottom-Right]: Switched to SYSTEM STATUS screen");
+    ESP_LOGI(TAG, "Touch [Bottom Row]: Switched to SYSTEM STATUS screen");
 }
 
 /* Return from AI Mode Screen to Pet Face */
@@ -350,11 +341,14 @@ static void create_idle_screen(void)
     lv_obj_set_style_arc_color(s_mouth, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
     lv_obj_clear_flag(s_mouth, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
-    /* 4-Quadrant Touch Controls (25% area each corner) */
+    /* Interactive Touch Controls:
+     * - Top-Left:  RGB Toggle (OpenRGB rainbow <-> off)
+     * - Top-Right: Monitor & ESP Brightness / Night Mode
+     * - Bottom Row: System Status Screen
+     */
     add_touch_zone(s_scr_idle, 0,   0,   SCREEN_W / 2, SCREEN_H / 2, quad_top_left_cb);     // Top-Left: RGB Toggle
     add_touch_zone(s_scr_idle, 160, 0,   SCREEN_W / 2, SCREEN_H / 2, quad_top_right_cb);    // Top-Right: Monitor & ESP Brightness / Night Mode
-    add_touch_zone(s_scr_idle, 0,   120, SCREEN_W / 2, SCREEN_H / 2, quad_bottom_left_cb);  // Bottom-Left: Hermes Desktop
-    add_touch_zone(s_scr_idle, 160, 120, SCREEN_W / 2, SCREEN_H / 2, quad_bottom_right_cb); // Bottom-Right: System Status
+    add_touch_zone(s_scr_idle, 0,   120, SCREEN_W,     SCREEN_H / 2, bottom_row_status_cb);  // Bottom Row: System Status Screen
 }
 
 /* Helper to build a metric row on the AI Mode Screen */
