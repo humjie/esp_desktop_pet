@@ -135,10 +135,18 @@ pet_emotion_t ui_get_emotion(void)
 }
 
 static int s_current_brightness = 50;
+static int64_t s_last_rgb_touch_us = 0;
+static int64_t s_last_night_touch_us = 0;
 
 /* Top-Left: RGB Toggle */
 static void quad_top_left_cb(lv_event_t *e)
 {
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_rgb_touch_us < 600000LL) {
+        return; // 600ms debounce
+    }
+    s_last_rgb_touch_us = now;
+
     s_love_countdown = 60; // Momentary sweet reaction
     printf("CMD,RGB_TOGGLE\n");
     fflush(stdout);
@@ -148,6 +156,12 @@ static void quad_top_left_cb(lv_event_t *e)
 /* Top-Right: Monitor Brightness 0% / Night Mode <-> 30% / Day Mode (ESP 0% <-> 50%) */
 static void quad_top_right_cb(lv_event_t *e)
 {
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_night_touch_us < 600000LL) {
+        return; // 600ms debounce
+    }
+    s_last_night_touch_us = now;
+
     if (s_current_brightness > 0) {
         s_current_brightness = 0;
         bsp_display_brightness_set(0);

@@ -182,9 +182,11 @@ def make_line(epoch, cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t):
 
 
 # ----------------------------------------------------------------------------
-# Interactive Device Action Handlers (Top-Left RGB, Top-Right Night, Bottom-Left Hermes)
+# Interactive Device Action Handlers (Top-Left RGB, Top-Right Night)
 # ----------------------------------------------------------------------------
-s_rgb_on = True
+s_rgb_lock = threading.Lock()
+s_night_lock = threading.Lock()
+s_rgb_on = False  # Start False so first tap turns on Rainbow mode!
 s_night_mode = False
 
 
@@ -203,52 +205,74 @@ def ensure_desktop_env():
 
 def action_rgb_toggle():
     global s_rgb_on
-    ensure_desktop_env()
-    s_rgb_on = not s_rgb_on
-    profile = "rainbow.orp" if s_rgb_on else "off.orp"
-    log.info("[ACTION] RGB toggle -> %s", profile)
+    if not s_rgb_lock.acquire(blocking=False):
+        log.info("[ACTION] RGB command already in progress, skipping duplicate request")
+        return
     try:
-        subprocess.run(
-            ["/usr/local/bin/openrgb", "--profile", profile],
-            check=False,
-            timeout=5,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning("OpenRGB execution failed: %s", e)
+        ensure_desktop_env()
+        s_rgb_on = not s_rgb_on
+        profile = "rainbow.orp" if s_rgb_on else "off.orp"
+        log.info("[ACTION] RGB toggle -> %s (state=%s)", profile, s_rgb_on)
+        try:
+            res = subprocess.run(
+                ["/usr/local/bin/openrgb", "--noautoconnect", "--profile", profile],
+                check=False,
+                timeout=15,
+                capture_output=True,
+                text=True,
+            )
+            log.info("OpenRGB profile loaded: code=%d stdout='%s'", res.returncode, res.stdout.strip())
+            # Ensure direct mode fallback if needed
+            mode_arg = "rainbow" if s_rgb_on else "off"
+            subprocess.run(
+                ["/usr/local/bin/openrgb", "--noautoconnect", "-m", mode_arg],
+                check=False,
+                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("OpenRGB execution failed: %s", e)
+    finally:
+        s_rgb_lock.release()
 
 
 def action_night_toggle():
     global s_night_mode
-    ensure_desktop_env()
-    s_night_mode = not s_night_mode
-    brightness_val = "0" if s_night_mode else "30"
-    night_light_val = "true" if s_night_mode else "false"
-    log.info("[ACTION] Night toggle -> NightMode=%s (Monitors=%s%%, NightLight=%s)",
-             s_night_mode, brightness_val, night_light_val)
-
-    # 1. GNOME Night Light
+    if not s_night_lock.acquire(blocking=False):
+        log.info("[ACTION] Night toggle command already in progress, skipping duplicate request")
+        return
     try:
-        subprocess.run(
-            ["gsettings", "set", "org.gnome.settings-daemon.plugins.color", "night-light-enabled", night_light_val],
-            check=False,
-            timeout=3,
-            env=os.environ,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning("gsettings night light failed: %s", e)
+        ensure_desktop_env()
+        s_night_mode = not s_night_mode
+        brightness_val = "0" if s_night_mode else "30"
+        night_light_val = "true" if s_night_mode else "false"
+        log.info("[ACTION] Night toggle -> NightMode=%s (Monitors=%s%%, NightLight=%s)",
+                 s_night_mode, brightness_val, night_light_val)
 
-    # 2. Monitor hardware brightness via ddcutil
-    for disp in ("1", "2"):
+        # 1. GNOME Night Light
         try:
             subprocess.run(
-                ["ddcutil", "setvcp", "10", brightness_val, "-d", disp],
+                ["gsettings", "set", "org.gnome.settings-daemon.plugins.color", "night-light-enabled", night_light_val],
                 check=False,
                 timeout=5,
+                env=os.environ,
             )
         except Exception as e:  # noqa: BLE001
-            log.warning("ddcutil display %s failed: %s", disp, e)
+            log.warning("gsettings night light failed: %s", e)
+
+        # 2. Monitor hardware brightness via ddcutil
+        for disp in ("1", "2"):
+            try:
+                subprocess.run(
+                    ["ddcutil", "setvcp", "10", brightness_val, "-d", disp],
+                    check=False,
+                    timeout=8,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("ddcutil display %s failed: %s", disp, e)
+    finally:
+        s_night_lock.release()
 
 
 def handle_device_command(cmd_line):
