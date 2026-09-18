@@ -12,6 +12,9 @@ Restart=always
 RestartSec=3
 Environment=HOME=/home/humjie
 Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/humjie/.Xauthority
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 
 [Install]
 WantedBy=multi-user.target

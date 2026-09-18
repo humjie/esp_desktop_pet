@@ -97,10 +97,10 @@ void app_main(void)
     ui_init();
     bsp_display_unlock();
 
-    /* 6. Turn on Backlight */
+    /* 6. Turn on Backlight (50% brightness) */
     vTaskDelay(pdMS_TO_TICKS(100));
-    bsp_display_backlight_on();
-    ESP_LOGI(TAG, "Display and backlight initialized");
+    bsp_display_brightness_set(50);
+    ESP_LOGI(TAG, "Display and backlight initialized (50%% brightness)");
 
     /* 7. Install USB-Serial-JTAG driver for console RX */
     usb_serial_jtag_driver_config_t usj_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();

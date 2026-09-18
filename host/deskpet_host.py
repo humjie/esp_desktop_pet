@@ -19,6 +19,7 @@ import sys
 import time
 import signal
 import logging
+import threading
 import subprocess
 import configparser
 from pathlib import Path
@@ -180,6 +181,114 @@ def make_line(epoch, cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t):
             % (int(epoch), cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t))
 
 
+# ----------------------------------------------------------------------------
+# Interactive Device Action Handlers (Top-Left RGB, Top-Right Night, Bottom-Left Hermes)
+# ----------------------------------------------------------------------------
+s_rgb_on = True
+s_night_mode = False
+
+
+def ensure_desktop_env():
+    """Ensure graphical session environment variables exist for child processes."""
+    if "DISPLAY" not in os.environ:
+        os.environ["DISPLAY"] = ":0"
+    if "XAUTHORITY" not in os.environ:
+        os.environ["XAUTHORITY"] = os.path.expanduser("~/.Xauthority")
+    if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
+        uid = os.getuid()
+        bus_path = f"/run/user/{uid}/bus"
+        if os.path.exists(bus_path):
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+
+
+def action_rgb_toggle():
+    global s_rgb_on
+    ensure_desktop_env()
+    s_rgb_on = not s_rgb_on
+    profile = "rainbow.orp" if s_rgb_on else "off.orp"
+    log.info("[ACTION] RGB toggle -> %s", profile)
+    try:
+        subprocess.run(
+            ["/usr/local/bin/openrgb", "--profile", profile],
+            check=False,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("OpenRGB execution failed: %s", e)
+
+
+def action_night_toggle():
+    global s_night_mode
+    ensure_desktop_env()
+    s_night_mode = not s_night_mode
+    brightness_val = "0" if s_night_mode else "30"
+    night_light_val = "true" if s_night_mode else "false"
+    log.info("[ACTION] Night toggle -> NightMode=%s (Monitors=%s%%, NightLight=%s)",
+             s_night_mode, brightness_val, night_light_val)
+
+    # 1. GNOME Night Light
+    try:
+        subprocess.run(
+            ["gsettings", "set", "org.gnome.settings-daemon.plugins.color", "night-light-enabled", night_light_val],
+            check=False,
+            timeout=3,
+            env=os.environ,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("gsettings night light failed: %s", e)
+
+    # 2. Monitor hardware brightness via ddcutil
+    for disp in ("1", "2"):
+        try:
+            subprocess.run(
+                ["ddcutil", "setvcp", "10", brightness_val, "-d", disp],
+                check=False,
+                timeout=5,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("ddcutil display %s failed: %s", disp, e)
+
+
+def action_hermes_toggle():
+    ensure_desktop_env()
+    # Check if Hermes Electron app is running
+    res = subprocess.run(
+        ["pgrep", "-f", "apps/desktop/release/linux-unpacked/Hermes"],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode == 0:
+        log.info("[ACTION] Hermes toggle -> Closing Hermes Desktop")
+        subprocess.run(["pkill", "-f", "apps/desktop/release/linux-unpacked/Hermes"], check=False)
+        subprocess.run(["pkill", "-f", "hermes desktop"], check=False)
+    else:
+        log.info("[ACTION] Hermes toggle -> Launching Hermes Desktop in background")
+        try:
+            subprocess.Popen(
+                ["/home/humjie/.local/bin/hermes", "desktop"],
+                cwd=os.path.expanduser("~"),
+                env=os.environ,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("Hermes desktop launch failed: %s", e)
+
+
+def handle_device_command(cmd_line):
+    cmd = cmd_line.strip()
+    log.info("[DEVICE CMD] %s", cmd)
+    if cmd == "CMD,RGB_TOGGLE":
+        threading.Thread(target=action_rgb_toggle, daemon=True).start()
+    elif cmd == "CMD,NIGHT_TOGGLE":
+        threading.Thread(target=action_night_toggle, daemon=True).start()
+    elif cmd == "CMD,HERMES_TOGGLE":
+        threading.Thread(target=action_hermes_toggle, daemon=True).start()
+
+
 def main():
     log.info("Desk Pet host starting. port=%s baud=%s", PORT, BAUD)
 
@@ -219,13 +328,17 @@ def main():
                     ser.write(line.encode("utf-8"))
                     ser.flush()
 
-                    # Read incoming logs from device if available
+                    # Read incoming logs and commands from device if available
                     while ser.in_waiting > 0:
                         raw = ser.readline()
                         if not raw:
                             break
                         dev_line = raw.decode("utf-8", errors="ignore").strip()
-                        if dev_line:
+                        if not dev_line:
+                            continue
+                        if dev_line.startswith("CMD,"):
+                            handle_device_command(dev_line)
+                        else:
                             log.info("[DEVICE] %s", dev_line)
                 except Exception as e:  # noqa: BLE001
                     log.warning("serial write failed: %s — reopening", e)

@@ -5,6 +5,7 @@
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "bsp/display.h"
 
 static const char *TAG = "ui";
 
@@ -133,20 +134,56 @@ pet_emotion_t ui_get_emotion(void)
     return s_current_emotion;
 }
 
-/* Touch & Button handler to toggle screens */
-static void screen_toggle_cb(lv_event_t *e)
+static int s_current_brightness = 50;
+
+/* Top-Left: RGB Toggle */
+static void quad_top_left_cb(lv_event_t *e)
 {
-    lv_disp_t *disp = lv_disp_get_default();
-    if (disp == NULL) return;
-    lv_obj_t *act = lv_disp_get_scr_act(disp);
-    if (act == s_scr_idle) {
-        lv_scr_load(s_scr_ai);
-        ESP_LOGI(TAG, "Touch: Switched to SYSTEM STATUS screen");
+    s_love_countdown = 60; // Momentary sweet reaction
+    printf("CMD,RGB_TOGGLE\n");
+    fflush(stdout);
+    ESP_LOGI(TAG, "Touch [Top-Left]: Toggled RGB");
+}
+
+/* Top-Right: Monitor Brightness 0% / Night Mode <-> 30% / Day Mode (ESP 0% <-> 50%) */
+static void quad_top_right_cb(lv_event_t *e)
+{
+    if (s_current_brightness > 0) {
+        s_current_brightness = 0;
+        bsp_display_brightness_set(0);
+        ESP_LOGI(TAG, "Touch [Top-Right]: Night Mode ON (ESP -> 0%%)");
     } else {
-        lv_scr_load(s_scr_idle);
-        s_love_countdown = 75; // ~3s of happy Love react when returning to pet
-        ESP_LOGI(TAG, "Touch: Switched to PET screen");
+        s_current_brightness = 50;
+        bsp_display_brightness_set(50);
+        s_love_countdown = 75; // Sweet reaction on wake
+        ESP_LOGI(TAG, "Touch [Top-Right]: Night Mode OFF (ESP -> 50%%)");
     }
+    printf("CMD,NIGHT_TOGGLE\n");
+    fflush(stdout);
+}
+
+/* Bottom-Left: Hermes Desktop Toggle */
+static void quad_bottom_left_cb(lv_event_t *e)
+{
+    s_love_countdown = 60; // Momentary sweet reaction
+    printf("CMD,HERMES_TOGGLE\n");
+    fflush(stdout);
+    ESP_LOGI(TAG, "Touch [Bottom-Left]: Toggled Hermes Desktop");
+}
+
+/* Bottom-Right: Switch to System Status screen */
+static void quad_bottom_right_cb(lv_event_t *e)
+{
+    lv_scr_load(s_scr_ai);
+    ESP_LOGI(TAG, "Touch [Bottom-Right]: Switched to SYSTEM STATUS screen");
+}
+
+/* Return from AI Mode Screen to Pet Face */
+static void ai_screen_back_cb(lv_event_t *e)
+{
+    lv_scr_load(s_scr_idle);
+    s_love_countdown = 75; // ~3s of happy Love react when returning to pet
+    ESP_LOGI(TAG, "Touch: Switched to PET screen");
 }
 
 /* Public: toggle AI Mode (called from MAIN / MUTE button callbacks). */
@@ -167,17 +204,19 @@ void ui_toggle_ai_mode(void)
     }
 }
 
-/* Helper to attach touch overlay covering whole screen */
-static void add_touch_overlay(lv_obj_t *parent)
+/* Helper to attach transparent touch zone */
+static lv_obj_t* add_touch_zone(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h, lv_event_cb_t cb)
 {
-    lv_obj_t *overlay = lv_obj_create(parent);
-    lv_obj_set_size(overlay, SCREEN_W, SCREEN_H);
-    lv_obj_set_pos(overlay, 0, 0);
-    lv_obj_set_style_bg_opa(overlay, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_opa(overlay, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_all(overlay, 0, 0);
-    lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(overlay, screen_toggle_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *zone = lv_obj_create(parent);
+    lv_obj_set_pos(zone, x, y);
+    lv_obj_set_size(zone, w, h);
+    lv_obj_set_style_bg_opa(zone, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_opa(zone, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(zone, 0, 0);
+    lv_obj_clear_flag(zone, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(zone, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(zone, cb, LV_EVENT_CLICKED, NULL);
+    return zone;
 }
 
 /* Create Idle Screen with Clock + Procedural Animated Face */
@@ -311,8 +350,11 @@ static void create_idle_screen(void)
     lv_obj_set_style_arc_color(s_mouth, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
     lv_obj_clear_flag(s_mouth, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
-    /* Transparent full-screen touch overlay */
-    add_touch_overlay(s_scr_idle);
+    /* 4-Quadrant Touch Controls (25% area each corner) */
+    add_touch_zone(s_scr_idle, 0,   0,   SCREEN_W / 2, SCREEN_H / 2, quad_top_left_cb);     // Top-Left: RGB Toggle
+    add_touch_zone(s_scr_idle, 160, 0,   SCREEN_W / 2, SCREEN_H / 2, quad_top_right_cb);    // Top-Right: Monitor & ESP Brightness / Night Mode
+    add_touch_zone(s_scr_idle, 0,   120, SCREEN_W / 2, SCREEN_H / 2, quad_bottom_left_cb);  // Bottom-Left: Hermes Desktop
+    add_touch_zone(s_scr_idle, 160, 120, SCREEN_W / 2, SCREEN_H / 2, quad_bottom_right_cb); // Bottom-Right: System Status
 }
 
 /* Helper to build a metric row on the AI Mode Screen */
@@ -368,8 +410,8 @@ static void create_ai_screen(void)
     create_metric_row(s_scr_ai, 152, "VRAM", lv_color_hex(0xBF5AF2), &s_vram_val, &s_vram_bar);
     create_metric_row(s_scr_ai, 190, "TEMP", lv_color_hex(0xFF453A), &s_temp_val, &s_temp_bar);
 
-    /* Transparent full-screen touch overlay */
-    add_touch_overlay(s_scr_ai);
+    /* Transparent full-screen touch overlay to return to pet face */
+    add_touch_zone(s_scr_ai, 0, 0, SCREEN_W, SCREEN_H, ai_screen_back_cb);
 }
 
 /* Face animation state machine tick (runs every ~40ms = 25 FPS) */

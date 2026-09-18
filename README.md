@@ -8,15 +8,18 @@ Inspired by [Tabbie](https://github.com/humjie/tabbie), Desk Pet expresses dynam
 
 ## ✨ Features
 
-- **📱 Tap-Anywhere Touchscreen Toggle**:
-  - Tap anywhere on the screen to switch between the **Pet Face** and the **System Status** dashboard.
-  - Tap again to toggle back to the Pet face (greeting you with an affectionate pink blush!).
-  - Physical **MUTE button** (GPIO 1) and the capacitive **touch home button** (MAIN) also toggle modes.
+- **📱 4-Quadrant Interactive Touchscreen Controls**:
+  - The main pet screen is divided into 4 invisible, responsive corner quadrants (25% area each):
+    - 💡 **Top-Left (0,0 to 160,120)**: **RGB Light Toggle** — Activates all PC RGB devices (RAM and fan lights) into rainbow mode via OpenRGB (`rainbow.orp`); touch again to turn off all lights (`off.orp`).
+    - 🌙 **Top-Right (160,0 to 320,120)**: **Night Mode & Monitor Brightness Toggle** — Dims all workstation monitors to 0% hardware brightness (`ddcutil setvcp 10 0`), activates GNOME Night Light, and dims the ESP screen to 0% (dark). Touch again in the top-right corner to restore monitors to 30% brightness, deactivate night light, and restore the ESP screen to 50% brightness.
+    - 🚀 **Bottom-Left (0,120 to 160,240)**: **Hermes Desktop Toggle** — Opens Hermes Desktop as a detached background process; touch again to gracefully close Hermes.
+    - 📊 **Bottom-Right (160,120 to 320,240)**: **System Status Screen** — Switches to the telemetry dashboard. Tapping anywhere on the System Status screen smoothly returns to the Pet screen.
+  - Physical **MUTE button** (GPIO 1) and capacitive **touch home button** (MAIN) also remain active as direct shortcuts to toggle the System Status screen.
 - **🎨 Dynamic Emotions & Vibrant Colors (Tabbie-Inspired)**:
   - 🩵 **Happy (Cyan `#00E5FF`)**: Playful friendly smile, gentle breathing, curious glances around.
   - 🧡 **Focus (Warm Amber `#FF9F0A`)**: Determined squint with concentrated eyebrows when CPU (>35%) or GPU (>30%) is under active workload.
   - 💚 **Chill / Relax (Mint Green `#30D158`)**: Sleepy half-lidded zen eyes with slow, peaceful breathing when your PC is idle.
-  - 🩷 **Loved (Blossom Pink `#FF375F`)**: Cheerful curved eyes `(^.^)`, deep rosy blush, and wide smile triggered whenever you touch the pet or return to the face screen.
+  - 🩷 **Loved (Blossom Pink `#FF375F`)**: Cheerful curved eyes `(^.^)`, deep rosy blush, and wide smile triggered on interaction or return to pet face.
   - ❤️ **Hot / Spicy (Crimson `#FF453A`)**: Furrowed angry brows and frown arc `(>_<)` when GPU temperature hits ≥70°C or heavy load spikes.
 - **📊 Real-Time Workstation Telemetry (1 Hz streaming)**:
   - **CPU %**: Utilization delta sampled over `/proc/stat`.
@@ -138,6 +141,10 @@ PET,1787344120,12.5,5428.20,63447.80,25.0,45.0,960.00,16311.00
 
 - Firmware filters strictly for lines prefixed with `PET,` (firmware log messages on the same port are safely ignored).
 - Firmware also returns device logs back upstream to the host, which `deskpet_host.py` forwards to `systemd` journal under `[DEVICE]`.
+- Upstream device commands:
+  - `CMD,RGB_TOGGLE`: Toggles OpenRGB profile between `rainbow.orp` and `off.orp`.
+  - `CMD,NIGHT_TOGGLE`: Toggles monitor brightness (0% / 30%), GNOME Night Light, and ESP LCD brightness (0% / 50%).
+  - `CMD,HERMES_TOGGLE`: Launches or gracefully terminates Hermes Desktop in the background.
 
 ---
 
