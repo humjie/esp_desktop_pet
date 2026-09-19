@@ -259,6 +259,9 @@ def _turn_off_fans():
         log.warning("Failed to turn off fans: %s", e)
 
 
+RAINBOW_SPEED = 2
+
+
 def _fan_animate_worker():
     dev = find_aura_hidraw()
     try:
@@ -285,7 +288,7 @@ def _fan_animate_worker():
                 for ch in range(3):
                     _send_aura_channel_colors(f, ch, colors)
 
-                step = (step + 6) % 360
+                step = (step + RAINBOW_SPEED) % 360
                 time.sleep(0.03)
 
             # Cleanly turn off fans on thread exit
@@ -312,14 +315,19 @@ def ensure_desktop_env():
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
 
 
-def _set_ram_mode(mode_name):
+def _set_ram_mode(mode_name, speed=None):
     """Set RAM mode asynchronously via OpenRGB without blocking the main loop."""
     def _worker():
         try:
+            cmd = ["/usr/local/bin/openrgb", "--noautoconnect",
+                   "-d", "0", "-m", mode_name]
+            if speed is not None:
+                cmd += ["-s", str(speed)]
+            cmd += ["-d", "1", "-m", mode_name]
+            if speed is not None:
+                cmd += ["-s", str(speed)]
             subprocess.run(
-                ["/usr/local/bin/openrgb", "--noautoconnect",
-                 "-d", "0", "-m", mode_name,
-                 "-d", "1", "-m", mode_name],
+                cmd,
                 check=False,
                 timeout=10,
                 stdout=subprocess.DEVNULL,
@@ -350,8 +358,8 @@ def action_rgb_toggle():
             s_fan_thread = threading.Thread(target=_fan_animate_worker, daemon=True)
             s_fan_thread.start()
 
-            # 2. Turn on RAM via OpenRGB into hardware Rainbow mode asynchronously
-            _set_ram_mode("rainbow")
+            # 2. Turn on RAM via OpenRGB into hardware Rainbow mode with speed 2
+            _set_ram_mode("rainbow", speed=RAINBOW_SPEED)
         else:
             # 1. Stop animated fan worker and ensure fans are turned off
             if s_fan_thread is not None and s_fan_thread.is_alive():
