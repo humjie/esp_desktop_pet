@@ -162,10 +162,18 @@ def open_serial():
     RTS (pyserial's default on open) hard-resets the MCU, causing a reboot
     loop on every reconnect. We must never toggle those lines.
     """
+    target_port = PORT
+    if not os.path.exists(target_port):
+        candidates = glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")
+        if candidates:
+            target_port = sorted(candidates)[0]
+        else:
+            log.warning("No serial port available (%s not found)", PORT)
+            return None
     try:
         import serial
         ser = serial.Serial(
-            port=PORT, baudrate=BAUD, timeout=SERIAL_TIMEOUT, write_timeout=SERIAL_TIMEOUT)
+            port=target_port, baudrate=BAUD, timeout=SERIAL_TIMEOUT, write_timeout=SERIAL_TIMEOUT)
         # Suppress DTR/RTS so opening the port does NOT reset the device.
         try:
             ser.dtr = False
@@ -174,7 +182,7 @@ def open_serial():
             pass
         return ser
     except Exception as e:  # noqa: BLE001
-        log.warning("Cannot open %s: %s", PORT, e)
+        log.warning("Cannot open %s: %s", target_port, e)
         return None
 
 
@@ -242,7 +250,9 @@ def _turn_off_fans():
         with open(dev, 'rb+', buffering=0) as f:
             for ch in range(3):
                 _send_aura_channel_colors(f, ch, [(0, 0, 0)] * 120)
-            for ch in [0x00, 0x01, 0x10, 0x11, 0x12]:
+            time.sleep(0.005)
+            for ch in [0x00, 0x01, 0x02, 0x10, 0x11, 0x12]:
+                _send_aura_pkt(f, [0xEC, 0x38, ch, 0x00, 0x00, 0x00])
                 _send_aura_pkt(f, [0xEC, 0x35, ch, 0x00, 0x00, 0x00])
             _send_aura_pkt(f, [0xEC, 0x3F, 0x55])
     except Exception as e:
@@ -253,36 +263,36 @@ def _fan_animate_worker():
     dev = find_aura_hidraw()
     try:
         with open(dev, 'rb+', buffering=0) as f:
-            # Initialize ARGB headers for 120 LEDs
-            _send_aura_pkt(f, [0xEC, 0x31, 0x04, 0x20, 0x00, 0x78, 0x25, 0xFF, 0xFF, 0xFF])
-            _send_aura_pkt(f, [0xEC, 0x31, 0x05, 0x21, 0x00, 0x78, 0x25, 0xFF, 0xFF, 0xFF])
-            _send_aura_pkt(f, [0xEC, 0x31, 0x06, 0x22, 0x00, 0x78, 0x25, 0xFF, 0xFF, 0xFF])
-            _send_aura_pkt(f, [0xEC, 0x3F, 0xAA])
-            _send_aura_pkt(f, [0xEC, 0x3F, 0x55])
-            time.sleep(0.02)
+            # 1. Power ON all channels with 0x38
+            for ch in [0x00, 0x01, 0x02, 0x10, 0x11, 0x12]:
+                _send_aura_pkt(f, [0xEC, 0x38, ch, 0x01, 0x00, 0x00])
+                time.sleep(0.005)
 
-            for ch in [0x00, 0x01, 0x10, 0x11, 0x12]:
+            # 2. Set Direct mode on headers
+            for ch in [0x00, 0x01, 0x02, 0x10, 0x11, 0x12]:
                 _send_aura_pkt(f, [0xEC, 0x35, ch, 0x00, 0x00, 0xFF])
-            time.sleep(0.02)
+                time.sleep(0.005)
+
+            # 3. Precompute 360-color rainbow lookup table for minimal CPU usage
+            rainbow_lut = []
+            for deg in range(360):
+                r, g, b = colorsys.hsv_to_rgb(deg / 360.0, 1.0, 1.0)
+                rainbow_lut.append((int(r * 255), int(g * 255), int(b * 255)))
 
             step = 0
             while not s_fan_stop_event.is_set():
-                colors = []
-                for i in range(120):
-                    h = ((i + step) / 36.0) % 1.0
-                    r, g, b = colorsys.hsv_to_rgb(h, 1.0, 1.0)
-                    colors.append((int(r * 255), int(g * 255), int(b * 255)))
-
+                colors = [rainbow_lut[(i * 3 + step) % 360] for i in range(120)]
                 for ch in range(3):
                     _send_aura_channel_colors(f, ch, colors)
 
-                step = (step + 1) % 36
-                time.sleep(0.04)
+                step = (step + 6) % 360
+                time.sleep(0.03)
 
-            # When exiting loop, turn off fans
+            # Cleanly turn off fans on thread exit
             for ch in range(3):
                 _send_aura_channel_colors(f, ch, [(0, 0, 0)] * 120)
-            for ch in [0x00, 0x01, 0x10, 0x11, 0x12]:
+            for ch in [0x00, 0x01, 0x02, 0x10, 0x11, 0x12]:
+                _send_aura_pkt(f, [0xEC, 0x38, ch, 0x00, 0x00, 0x00])
                 _send_aura_pkt(f, [0xEC, 0x35, ch, 0x00, 0x00, 0x00])
             _send_aura_pkt(f, [0xEC, 0x3F, 0x55])
     except Exception as e:
@@ -300,6 +310,25 @@ def ensure_desktop_env():
         bus_path = f"/run/user/{uid}/bus"
         if os.path.exists(bus_path):
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+
+
+def _set_ram_mode(mode_name):
+    """Set RAM mode asynchronously via OpenRGB without blocking the main loop."""
+    def _worker():
+        try:
+            subprocess.run(
+                ["/usr/local/bin/openrgb", "--noautoconnect",
+                 "-d", "0", "-m", mode_name,
+                 "-d", "1", "-m", mode_name],
+                check=False,
+                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            log.warning("OpenRGB RAM %s failed: %s", mode_name, e)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def action_rgb_toggle():
@@ -321,19 +350,8 @@ def action_rgb_toggle():
             s_fan_thread = threading.Thread(target=_fan_animate_worker, daemon=True)
             s_fan_thread.start()
 
-            # 2. Turn on RAM via OpenRGB into hardware Rainbow mode
-            try:
-                subprocess.run(
-                    ["/usr/local/bin/openrgb", "--noautoconnect",
-                     "-d", "0", "-m", "rainbow",
-                     "-d", "1", "-m", "rainbow"],
-                    check=False,
-                    timeout=10,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception as e:
-                log.warning("OpenRGB RAM rainbow failed: %s", e)
+            # 2. Turn on RAM via OpenRGB into hardware Rainbow mode asynchronously
+            _set_ram_mode("rainbow")
         else:
             # 1. Stop animated fan worker and ensure fans are turned off
             if s_fan_thread is not None and s_fan_thread.is_alive():
@@ -341,19 +359,8 @@ def action_rgb_toggle():
                 s_fan_thread.join(timeout=1.0)
             _turn_off_fans()
 
-            # 2. Turn off RAM via OpenRGB
-            try:
-                subprocess.run(
-                    ["/usr/local/bin/openrgb", "--noautoconnect",
-                     "-d", "0", "-m", "off",
-                     "-d", "1", "-m", "off"],
-                    check=False,
-                    timeout=10,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception as e:
-                log.warning("OpenRGB RAM off failed: %s", e)
+            # 2. Turn off RAM via OpenRGB asynchronously
+            _set_ram_mode("off")
     finally:
         s_rgb_lock.release()
 
