@@ -5,6 +5,8 @@ firmware/sdkconfig.old
 
 # Python virtual environment and cache
 host/.venv/
+host/models/**/*.onnx
+host/models/**/*.onnx.json
 **/__pycache__/
 *.py[cod]
 *$py.class

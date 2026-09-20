@@ -16,6 +16,8 @@ link is ignored by the pet (firmware logs may appear — they are ignored).
 
 import os
 import sys
+import io
+import wave
 import glob
 import time
 import signal
@@ -24,7 +26,10 @@ import colorsys
 import threading
 import subprocess
 import configparser
+import base64
+import re
 from pathlib import Path
+import numpy as np
 
 # ----------------------------------------------------------------------------
 # Configuration (defaults; override via ~/.config/deskpet/deskpet.conf)
@@ -172,14 +177,18 @@ def open_serial():
             return None
     try:
         import serial
-        ser = serial.Serial(
-            port=target_port, baudrate=BAUD, timeout=SERIAL_TIMEOUT, write_timeout=SERIAL_TIMEOUT)
-        # Suppress DTR/RTS so opening the port does NOT reset the device.
+        ser = serial.Serial()
+        ser.port = target_port
+        ser.baudrate = BAUD
+        ser.timeout = SERIAL_TIMEOUT
+        ser.write_timeout = SERIAL_TIMEOUT
         try:
             ser.dtr = False
             ser.rts = False
-        except Exception:  # noqa: BLE001  (some ports don't expose these)
+            ser.exclusive = True
+        except Exception:
             pass
+        ser.open()
         return ser
     except Exception as e:  # noqa: BLE001
         log.warning("Cannot open %s: %s", target_port, e)
@@ -303,13 +312,19 @@ def _fan_animate_worker():
 
 
 def ensure_desktop_env():
-    """Ensure graphical session environment variables exist for child processes."""
+    """Ensure graphical and audio session environment variables exist for child processes."""
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = ":0"
     if "XAUTHORITY" not in os.environ:
         os.environ["XAUTHORITY"] = os.path.expanduser("~/.Xauthority")
+    uid = os.getuid()
+    if "XDG_RUNTIME_DIR" not in os.environ:
+        os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
+    if "PULSE_SERVER" not in os.environ:
+        pulse_sock = f"/run/user/{uid}/pulse/native"
+        if os.path.exists(pulse_sock):
+            os.environ["PULSE_SERVER"] = f"unix:{pulse_sock}"
     if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
-        uid = os.getuid()
         bus_path = f"/run/user/{uid}/bus"
         if os.path.exists(bus_path):
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
@@ -411,6 +426,511 @@ def action_night_toggle():
         s_night_lock.release()
 
 
+# ----------------------------------------------------------------------------
+# Voice Recognition (STT) & Piper Speech (TTS) & Command Dispatch ("meow")
+# ----------------------------------------------------------------------------
+s_whisper_model = None
+try:
+    from faster_whisper import WhisperModel
+    log.info("Loading faster-whisper speech recognition model (tiny.en)...")
+    s_whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+    log.info("Whisper model loaded and ready for voice commands.")
+except Exception as e:
+    log.error("Failed to load Whisper model: %s", e)
+
+# Piper Neural TTS
+s_piper_voice = None
+PIPER_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "piper")
+PIPER_MODEL_PATH = os.path.join(PIPER_MODEL_DIR, "en_US-lessac-low.onnx")
+try:
+    if os.path.exists(PIPER_MODEL_PATH):
+        from piper.voice import PiperVoice
+        log.info("Loading Piper Neural TTS model (%s)...", PIPER_MODEL_PATH)
+        s_piper_voice = PiperVoice.load(PIPER_MODEL_PATH)
+        log.info("Piper Neural TTS loaded and ready.")
+    else:
+        log.warning("Piper model file not found at %s. Spoken TTS will be unavailable until downloaded.", PIPER_MODEL_PATH)
+except Exception as e:
+    log.error("Failed to load Piper TTS: %s", e)
+
+
+def stream_pcm_to_esp(pcm_data, chunk_size=1024):
+    """Stream 16kHz mono 16-bit PCM bytes to ESP32 speaker over USB serial."""
+    global s_active_ser
+    if not pcm_data:
+        return
+
+    send_device_raw_cmd("SPK,TTS,START")
+
+    # 1024 bytes = 512 samples @ 16kHz = 0.032 seconds
+    chunk_delay = (chunk_size / 2) / 16000.0
+    # Stream slightly ahead of realtime (~80%) so the 32KB ESP ring buffer stays primed
+    sleep_interval = chunk_delay * 0.80
+
+    for offset in range(0, len(pcm_data), chunk_size):
+        chunk = pcm_data[offset : offset + chunk_size]
+        b64_chunk = base64.b64encode(chunk).decode("ascii")
+        line = f"SPK,D,{b64_chunk}\n"
+        with s_serial_lock:
+            if s_active_ser is not None:
+                try:
+                    s_active_ser.write(line.encode("ascii"))
+                    s_active_ser.flush()
+                except Exception as e:
+                    log.warning("Failed to write SPK chunk to serial: %s", e)
+                    break
+        time.sleep(sleep_interval)
+
+    send_device_raw_cmd("SPK,TTS,END")
+
+
+def speak_tts(text):
+    """Speak response aloud using Piper Neural TTS streamed directly to the ESP speaker."""
+    if not s_piper_voice:
+        return
+
+    def _speak_worker():
+        try:
+            clean_text = text.replace("=^.^=", "").replace("•", "").strip()
+            if not clean_text:
+                return
+            log.info("[TTS] Synthesizing speech: '%s'", clean_text)
+            chunks = list(s_piper_voice.synthesize(clean_text))
+            if not chunks:
+                return
+            raw_pcm = b"".join(c.audio_int16_bytes for c in chunks)
+            log.info("[TTS] Streaming %d bytes of speech to ESP speaker...", len(raw_pcm))
+            stream_pcm_to_esp(raw_pcm)
+            log.info("[TTS] Speech playback complete.")
+        except Exception as err:
+            log.warning("Piper TTS speech error: %s", err)
+
+    threading.Thread(target=_speak_worker, daemon=True).start()
+
+
+# Music streaming process management
+s_music_proc = None
+s_music_stop_event = threading.Event()
+s_music_lock = threading.Lock()
+MUSIC_STREAMS = {
+    "lofi": "http://ice1.somafm.com/groovesalad-128-mp3",
+    "chill": "http://ice1.somafm.com/defcon-128-mp3",
+    "radio": "http://stream.radioparadise.com/mp3-128",
+}
+
+
+def music_stop():
+    global s_music_proc
+    with s_music_lock:
+        s_music_stop_event.set()
+        if s_music_proc is not None:
+            log.info("[MUSIC] Stopping internet music stream...")
+            try:
+                s_music_proc.terminate()
+                s_music_proc.wait(timeout=2)
+            except Exception:
+                pass
+            s_music_proc = None
+        send_device_raw_cmd("SPK,STOP")
+
+
+def music_play(station_key="lofi", delay_s=0.0):
+    global s_music_proc
+    def _starter():
+        global s_music_proc
+        if delay_s > 0:
+            time.sleep(delay_s)
+        with s_music_lock:
+            s_music_stop_event.set()
+            if s_music_proc is not None:
+                try:
+                    s_music_proc.terminate()
+                    s_music_proc.wait(timeout=2)
+                except Exception:
+                    pass
+                s_music_proc = None
+
+            s_music_stop_event.clear()
+            url = MUSIC_STREAMS.get(station_key, MUSIC_STREAMS["lofi"])
+            log.info("[MUSIC] Streaming music to ESP speaker: %s (%s)", station_key, url)
+            send_device_raw_cmd("SPK,MUS,START")
+
+            # ffmpeg transcodes the internet audio stream to 16kHz mono 16-bit PCM in realtime (-re)
+            cmd = [
+                "ffmpeg",
+                "-re",
+                "-i", url,
+                "-f", "s16le",
+                "-ar", "16000",
+                "-ac", "1",
+                "-loglevel", "quiet",
+                "pipe:1",
+            ]
+            try:
+                s_music_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as e:
+                log.error("Failed to start ffmpeg music transcode: %s", e)
+                return
+
+        def _music_worker(proc, stop_evt):
+            CHUNK_SIZE = 1024  # 512 samples = 32ms
+            log.info("[MUSIC] Streaming audio chunks to ESP speaker...")
+            try:
+                while not stop_evt.is_set():
+                    raw = proc.stdout.read(CHUNK_SIZE)
+                    if not raw:
+                        break
+                    b64_chunk = base64.b64encode(raw).decode("ascii")
+                    line = f"SPK,D,{b64_chunk}\n"
+                    with s_serial_lock:
+                        if s_active_ser is not None:
+                            try:
+                                s_active_ser.write(line.encode("ascii"))
+                                s_active_ser.flush()
+                            except Exception:
+                                break
+            except Exception as err:
+                log.warning("Music streaming error: %s", err)
+            finally:
+                send_device_raw_cmd("SPK,STOP")
+                log.info("[MUSIC] Music stream ended.")
+
+        threading.Thread(target=_music_worker, args=(s_music_proc, s_music_stop_event), daemon=True).start()
+
+    threading.Thread(target=_starter, daemon=True).start()
+
+
+def pc_audio_play(delay_s=0.0):
+    """Stream all PC sound output (PulseAudio/PipeWire monitor) to the ESP hardware speaker at MAX volume."""
+    global s_music_proc
+    def _starter():
+        global s_music_proc
+        if delay_s > 0:
+            time.sleep(delay_s)
+        with s_music_lock:
+            s_music_stop_event.set()
+            if s_music_proc is not None:
+                try:
+                    s_music_proc.terminate()
+                    s_music_proc.wait(timeout=2)
+                except Exception:
+                    pass
+                s_music_proc = None
+
+            s_music_stop_event.clear()
+            log.info("[PC AUDIO] Streaming all PC sound to ESP speaker via PulseAudio monitor at MAX volume (100%)...")
+            # Set ESP hardware speaker volume to max (100%) for PC sound
+            send_device_raw_cmd("CMD,VOL,100")
+            send_device_raw_cmd("SPK,MUS,START")
+
+            # Capture all PC system output in realtime @ 16kHz mono 16-bit PCM
+            env = os.environ.copy()
+            if "XDG_RUNTIME_DIR" not in env or not os.path.exists(env["XDG_RUNTIME_DIR"]):
+                env["XDG_RUNTIME_DIR"] = "/run/user/1000"
+            if "PULSE_SERVER" not in env:
+                env["PULSE_SERVER"] = "unix:/run/user/1000/pulse/native"
+
+            cmd = [
+                "parec",
+                "--format=s16le",
+                "--rate=16000",
+                "--channels=1",
+            ]
+            try:
+                s_music_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                )
+            except Exception as e:
+                log.error("Failed to start parec PC audio stream: %s", e)
+                return
+
+        def _pc_audio_worker(proc, stop_evt):
+            CHUNK_SIZE = 1024  # 512 samples = 32ms
+            log.info("[PC AUDIO] Streaming PC audio chunks to ESP speaker...")
+            try:
+                while not stop_evt.is_set():
+                    raw = proc.stdout.read(CHUNK_SIZE)
+                    if not raw:
+                        break
+                    b64_chunk = base64.b64encode(raw).decode("ascii")
+                    line = f"SPK,D,{b64_chunk}\n"
+                    with s_serial_lock:
+                        if s_active_ser is not None:
+                            try:
+                                s_active_ser.write(line.encode("ascii"))
+                                s_active_ser.flush()
+                            except Exception:
+                                break
+            except Exception as err:
+                log.warning("PC audio streaming error: %s", err)
+            finally:
+                send_device_raw_cmd("SPK,STOP")
+                # Restore pleasant default speaker volume (70%) for TTS speech
+                send_device_raw_cmd("CMD,VOL,70")
+                log.info("[PC AUDIO] PC audio stream ended, restored volume to 70%.")
+
+        threading.Thread(target=_pc_audio_worker, args=(s_music_proc, s_music_stop_event), daemon=True).start()
+
+    threading.Thread(target=_starter, daemon=True).start()
+
+
+s_serial_lock = threading.Lock()
+s_active_ser = None
+s_audio_chunks = []
+s_audio_lock = threading.Lock()
+
+s_listening_window_active = False
+s_listening_window_expires = 0.0
+s_listening_window_lock = threading.Lock()
+
+
+def send_device_raw_cmd(cmd):
+    global s_active_ser
+    with s_serial_lock:
+        if s_active_ser is not None:
+            try:
+                line = f"{cmd.strip()}\n"
+                s_active_ser.write(line.encode("utf-8"))
+                s_active_ser.flush()
+                log.info("[RAW CMD] Sent to BOX-3: %s", line.strip())
+            except Exception as e:
+                log.warning("Failed to send command to BOX-3: %s", e)
+
+
+def send_device_response(action, text, speak_text=None):
+    global s_active_ser
+    with s_serial_lock:
+        if s_active_ser is not None:
+            try:
+                line = f"CMD,VOICE_RESP,{action},{text}\n"
+                s_active_ser.write(line.encode("utf-8"))
+                s_active_ser.flush()
+                log.info("[VOICE RESP] Sent to BOX-3: %s", line.strip())
+            except Exception as e:
+                log.warning("Failed to send response to BOX-3: %s", e)
+
+    # Speak response using Piper TTS
+    tts_message = speak_text if speak_text is not None else text
+    if tts_message:
+        speak_tts(tts_message)
+
+
+def execute_voice_instruction(instruction):
+    inst = instruction.lower().strip(" .,!?")
+    log.info("[VOICE ACTION] Parsing instruction: '%s'", inst)
+
+    # 1. Greetings
+    if any(k in inst for k in ["hello", "hi", "hey", "good morning", "how are you", "good day", "what's up", "meow"]):
+        log.info("Voice: Greeting handled")
+        send_device_response("HAPPY", "MEOW HELLO! =^.^=", speak_text="Meow! Hello there, human!")
+        return
+
+    # 2. Appearance
+    if any(k in inst for k in ["robot", "cyber", "original"]):
+        log.info("Voice: Switch to robot")
+        send_device_response("APPEARANCE_ORIGINAL", "CYBER PET READY", speak_text="Cyber robot pet mode activated!")
+        return
+    if "cat" in inst or "kitty" in inst:
+        log.info("Voice: Switch to cat")
+        send_device_response("APPEARANCE_CAT", "SWITCHED TO CAT", speak_text="Meow! Cat pet mode activated.")
+        return
+    if any(k in inst for k in ["switch", "change", "appearance", "transform"]):
+        log.info("Voice: Toggle appearance")
+        send_device_response("APPEARANCE_TOGGLE", "TRANSFORM!", speak_text="Transforming appearance!")
+        return
+
+    # 3. PC Lighting / RGB
+    if any(k in inst for k in ["light", "lights", "rgb", "lamp", "color"]):
+        log.info("Voice: Toggle RGB")
+        threading.Thread(target=action_rgb_toggle, daemon=True).start()
+        send_device_response("LOVE", "RGB TOGGLED", speak_text="Toggling PC lights.")
+        return
+
+    # 4. Night Mode / Sleep
+    if any(k in inst for k in ["night", "sleep", "goodnight", "bedtime", "dark"]):
+        log.info("Voice: Night mode")
+        if not s_night_mode:
+            threading.Thread(target=action_night_toggle, daemon=True).start()
+        send_device_response("RELAX", "NIGHT MODE ON", speak_text="Good night. Entering sleep mode.")
+        return
+
+    # 5. Day Mode / Wake up
+    if any(k in inst for k in ["day", "wake up", "wake", "morning", "bright"]):
+        log.info("Voice: Day mode")
+        if s_night_mode:
+            threading.Thread(target=action_night_toggle, daemon=True).start()
+        send_device_response("HAPPY", "DAY MODE READY", speak_text="Good morning! Day mode ready.")
+        return
+
+    # 6. Volume controls
+    if any(k in inst for k in ["volume up", "louder", "turn up", "turn it up"]):
+        log.info("Voice: Volume Up")
+        send_device_raw_cmd("CMD,VOL,UP")
+        send_device_response("HAPPY", "VOL +10%", speak_text="Volume up.")
+        return
+
+    if any(k in inst for k in ["volume down", "quieter", "turn down", "lower volume"]):
+        log.info("Voice: Volume Down")
+        send_device_raw_cmd("CMD,VOL,DOWN")
+        send_device_response("HAPPY", "VOL -10%", speak_text="Volume down.")
+        return
+
+    if "mute" in inst or "unmute" in inst:
+        log.info("Voice: Mute Toggle")
+        send_device_raw_cmd("CMD,VOL,0")
+        send_device_response("HAPPY", "MUTED", speak_text="Speaker muted.")
+        return
+
+    # 7. Music & Media controls
+    if any(k in inst for k in ["stop music", "pause music", "stop stream", "be quiet", "silence"]):
+        log.info("Voice: Music Stop")
+        music_stop()
+        try:
+            subprocess.run(["playerctl", "pause"], check=False)
+        except Exception:
+            pass
+        send_device_response("RELAX", "MUSIC STOPPED", speak_text="Music stopped.")
+        return
+
+    if any(k in inst for k in ["pc sound", "pc audio", "computer sound", "computer audio", "system sound", "play pc", "pc mode"]):
+        log.info("Voice: Play PC Audio / Sound")
+        threading.Thread(target=pc_audio_play, args=(1.8,), daemon=True).start()
+        send_device_response("HAPPY", "PC AUDIO STREAM", speak_text="Streaming PC sound to pet speaker.")
+        return
+
+    if any(k in inst for k in ["play lofi", "lofi music", "lo-fi", "lofi"]):
+        log.info("Voice: Play Lo-Fi Music")
+        threading.Thread(target=music_play, args=("lofi", 1.8), daemon=True).start()
+        send_device_response("HAPPY", "PLAYING LO-FI", speak_text="Playing lo fi radio.")
+        return
+
+    if any(k in inst for k in ["play chill", "chill music", "ambient"]):
+        log.info("Voice: Play Chill Music")
+        threading.Thread(target=music_play, args=("chill", 1.8), daemon=True).start()
+        send_device_response("HAPPY", "PLAYING CHILL", speak_text="Playing chill groove radio.")
+        return
+
+    if any(k in inst for k in ["play music", "play radio", "play song", "start music", "play"]):
+        log.info("Voice: Play Music")
+        threading.Thread(target=music_play, args=("lofi", 1.8), daemon=True).start()
+        try:
+            subprocess.run(["playerctl", "play"], check=False)
+        except Exception:
+            pass
+        send_device_response("HAPPY", "PLAYING MUSIC", speak_text="Playing music now!")
+        return
+
+    if any(k in inst for k in ["pause"]):
+        log.info("Voice: Media Pause")
+        music_stop()
+        try:
+            subprocess.run(["playerctl", "pause"], check=False)
+        except Exception:
+            pass
+        send_device_response("RELAX", "MUSIC PAUSED", speak_text="Paused.")
+        return
+
+    if any(k in inst for k in ["next", "skip"]):
+        log.info("Voice: Media Next")
+        try:
+            subprocess.run(["playerctl", "next"], check=False)
+            send_device_response("HAPPY", "NEXT TRACK", speak_text="Next track.")
+        except Exception as e:
+            log.warning("playerctl failed: %s", e)
+        return
+
+    # 8. System Status
+    if any(k in inst for k in ["status", "cpu", "stats", "dashboard", "specs", "load"]):
+        log.info("Voice: Show system status")
+        send_device_response("SCREEN_AI", "SYSTEM STATUS", speak_text="Displaying system performance dashboard.")
+        return
+
+    # 9. Default friendly reaction for any unrecognized instruction after meow
+    log.info("Voice: Unrecognized instruction '%s' -> friendly reply", inst)
+    send_device_response("LOVE", "PURR! MEOW =^.^=", speak_text="Meow! Purr!")
+
+
+def process_voice_audio(audio_data):
+    global s_listening_window_active, s_listening_window_expires
+    if s_whisper_model is None or len(audio_data) < 3200:
+        return
+
+    try:
+        # Ensure buffer length is an even number of bytes (16-bit int)
+        if len(audio_data) % 2 != 0:
+            audio_data = audio_data[: len(audio_data) - (len(audio_data) % 2)]
+
+        audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+        prompt = "Meow, robot, cat, lights, sleep, night mode, status, volume, pause, play, play music, lofi, chill, transform, stop music, pc sound, pc audio."
+        segments, _info = s_whisper_model.transcribe(audio_np, beam_size=1, language="en", initial_prompt=prompt)
+        raw_text = " ".join([s.text for s in segments]).strip()
+        if not raw_text:
+            return
+
+        text = raw_text.lower().strip(" .,!?")
+        log.info("[VOICE STT] Transcribed: '%s'", raw_text)
+
+        wake_pattern = r'\b(meow|miao|mio|mew|me-ow|meow-meow)\b'
+        match = re.search(wake_pattern, text)
+
+        with s_listening_window_lock:
+            now = time.time()
+            is_active_window = s_listening_window_active and (now < s_listening_window_expires)
+
+        if match:
+            wake_end = match.end()
+            raw_instruction = text[wake_end:].strip(" ,.!?")
+            # If the instruction contains only wake word repetitions (e.g. "meow meow" or "mio mio"), strip them
+            remaining = re.sub(wake_pattern, '', text).strip(" ,.!?")
+
+            # Stop any music playing so user can speak and listen cleanly
+            music_stop()
+
+            if not raw_instruction or not remaining:
+                # User called 'meow' -> Activate Listening Window!
+                with s_listening_window_lock:
+                    s_listening_window_active = True
+                    s_listening_window_expires = time.time() + 6.0
+                log.info("🌟 Wake word 'meow' detected! Entering LISTENING window (6s).")
+                send_device_raw_cmd("CMD,VOICE_WAKE")
+                return
+            else:
+                # User spoke 'meow <command>' in one sentence
+                with s_listening_window_lock:
+                    s_listening_window_active = False
+                log.info("🌟 Wake word 'meow' with immediate command: '%s'", remaining)
+                execute_voice_instruction(remaining)
+                return
+
+        # Direct stop/pause commands during music streaming without requiring 'meow'
+        if s_music_proc is not None and any(k in text for k in ["stop", "pause", "quiet", "silence", "shut up", "turn off"]):
+            log.info("🎯 Direct music stop command detected during playback: '%s'", text)
+            execute_voice_instruction("stop music")
+            return
+
+        elif is_active_window:
+            # Listening window is active, user spoke subsequent command (e.g. 'robot', 'lights', etc.)!
+            with s_listening_window_lock:
+                s_listening_window_active = False
+            log.info("🎯 Executing subsequent voice command during active window: '%s'", text)
+            execute_voice_instruction(text)
+            return
+
+        else:
+            log.debug("Speech ignored (no 'meow' wake word and not in active listening window): '%s'", text)
+            return
+
+    except Exception as e:
+        log.error("Error processing voice audio: %s", e)
+
+
 def handle_device_command(cmd_line):
     cmd = cmd_line.strip()
     log.info("[DEVICE CMD] %s", cmd)
@@ -420,8 +940,57 @@ def handle_device_command(cmd_line):
         threading.Thread(target=action_night_toggle, daemon=True).start()
 
 
+def serial_reader_loop(ser, stop_event):
+    global s_audio_chunks
+    while not stop_event.is_set():
+        try:
+            if ser.in_waiting > 0:
+                raw = ser.readline()
+                if not raw:
+                    time.sleep(0.005)
+                    continue
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+
+                if line.startswith("AUD,START,"):
+                    with s_audio_lock:
+                        s_audio_chunks = []
+                    log.info("[AUDIO] Speech capture started...")
+                elif line.startswith("AUD,D,"):
+                    b64_str = line[6:].strip()
+                    try:
+                        chunk = base64.b64decode(b64_str)
+                        with s_audio_lock:
+                            s_audio_chunks.append(chunk)
+                    except Exception as e:
+                        log.warning("Failed to decode audio chunk: %s", e)
+                elif line.startswith("AUD,END"):
+                    with s_audio_lock:
+                        full_data = b"".join(s_audio_chunks)
+                        s_audio_chunks = []
+                    log.info("[AUDIO] Speech capture finished (%d bytes). Transcribing...", len(full_data))
+                    threading.Thread(target=process_voice_audio, args=(full_data,), daemon=True).start()
+                elif line.startswith("CMD,"):
+                    handle_device_command(line)
+                elif line.startswith("EVENT,"):
+                    log.info("[EVENT] %s", line)
+                    if line == "EVENT,MUSIC_STOP":
+                        log.info("Physical button / touch pressed to stop music")
+                        music_stop()
+                else:
+                    log.info("[DEVICE] %s", line)
+            else:
+                time.sleep(0.01)
+        except Exception as e:
+            log.warning("Serial reader loop error: %s", e)
+            break
+
+
 def main():
+    global s_active_ser, s_listening_window_active, s_listening_window_expires
     log.info("Desk Pet host starting. port=%s baud=%s", PORT, BAUD)
+    ensure_desktop_env()
 
     running = True
 
@@ -438,10 +1007,32 @@ def main():
         log.error("pyserial not installed. Run: pip install pyserial")
         return 1
 
+    while running and os.path.exists("/tmp/deskpet_flash_pause"):
+        log.info("Flash pause requested (/tmp/deskpet_flash_pause exists), waiting...")
+        time.sleep(1.0)
+
     ser = open_serial()
+    s_active_ser = ser
+    rx_stop_event = threading.Event()
+    rx_thread = None
+    if ser is not None:
+        rx_thread = threading.Thread(target=serial_reader_loop, args=(ser, rx_stop_event), daemon=True)
+        rx_thread.start()
 
     try:
         while running:
+            if os.path.exists("/tmp/deskpet_flash_pause"):
+                if ser is not None:
+                    rx_stop_event.set()
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+                    ser = None
+                    s_active_ser = None
+                time.sleep(1.0)
+                continue
+
             epoch = time.time()
 
             cpu = read_cpu_pct()
@@ -452,43 +1043,66 @@ def main():
             log.info("cpu=%4.1f%% ram=%.1f/%.1fMB gpu=%4.1f%% temp=%5.1fC vram=%.0f/%.0fMB",
                      cpu, ram_u, ram_t, gpu, gpu_temp, vram_u, vram_t)
 
-            if ser is None:
+            if ser is None or (rx_thread is not None and not rx_thread.is_alive()):
+                if ser is not None:
+                    rx_stop_event.set()
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
                 ser = open_serial()
+                s_active_ser = ser
+                if ser is not None:
+                    rx_stop_event = threading.Event()
+                    rx_thread = threading.Thread(target=serial_reader_loop, args=(ser, rx_stop_event), daemon=True)
+                    rx_thread.start()
+
             if ser is not None:
                 try:
-                    ser.write(line.encode("utf-8"))
-                    ser.flush()
-
-                    # Read incoming logs and commands from device if available
-                    while ser.in_waiting > 0:
-                        raw = ser.readline()
-                        if not raw:
-                            break
-                        dev_line = raw.decode("utf-8", errors="ignore").strip()
-                        if not dev_line:
-                            continue
-                        if dev_line.startswith("CMD,"):
-                            handle_device_command(dev_line)
-                        else:
-                            log.info("[DEVICE] %s", dev_line)
+                    with s_serial_lock:
+                        ser.write(line.encode("utf-8"))
+                        ser.flush()
                 except Exception as e:  # noqa: BLE001
                     log.warning("serial write failed: %s — reopening", e)
+                    rx_stop_event.set()
                     try:
                         ser.close()
                     except Exception:  # noqa: BLE001
                         pass
                     ser = None
+                    s_active_ser = None
 
             # wait for the next cycle (account for the CPU sample sleep already done)
             deadline = time.time() + INTERVAL
             while running and time.time() < deadline:
+                # Check for test command trigger file
+                if os.path.exists("/tmp/deskpet_test_cmd"):
+                    try:
+                        with open("/tmp/deskpet_test_cmd", "r") as f:
+                            t_cmd = f.read().strip()
+                        os.remove("/tmp/deskpet_test_cmd")
+                        if t_cmd:
+                            log.info("[TEST TRIGGER] Received test command: '%s'", t_cmd)
+                            execute_voice_instruction(t_cmd)
+                    except Exception as err:
+                        log.warning("Test command trigger error: %s", err)
+
+                # Check for listening window timeout
+                with s_listening_window_lock:
+                    if s_listening_window_active and time.time() >= s_listening_window_expires:
+                        s_listening_window_active = False
+                        log.info("Listening window timed out. Returning to idle.")
+                        send_device_raw_cmd("CMD,VOICE_IDLE")
                 time.sleep(0.05)
     finally:
+        rx_stop_event.set()
         if ser is not None:
             try:
                 ser.close()
             except Exception:  # noqa: BLE001
                 pass
+        s_active_ser = None
     return 0
 
 
