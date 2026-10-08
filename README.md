@@ -17,6 +17,8 @@ Setup compiles the app and enables startup at desktop login after reboot.
 Run `run.sh` by its full path from anywhere. Rerun setup after moving the repo.
 Only one instance runs at a time. Closing it keeps it closed until you launch it
 again or log in again.
+The card stays in the desktop layer below application windows, including when
+clicked. The window manager handles this without a timer or background polling.
 
 Build requirements: a C compiler, make, pkg-config, Tk and json-c development
 headers. These are already installed on this computer. On another Ubuntu/Debian

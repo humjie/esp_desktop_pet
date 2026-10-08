@@ -1,4 +1,6 @@
 # Tk draws this small window through X11; no OpenGL or GPU toolkit is used.
+# Let the window manager keep the card in the desktop layer, below applications.
+wm attributes . -type desktop
 wm title . "Quote Cards"
 wm geometry . 560x380
 wm minsize . 380 300
