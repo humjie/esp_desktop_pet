@@ -76,6 +76,11 @@ RGB lighting remains available through voice commands.
 
 ### Quote collection
 
+Quote Cards is part of this single repository: the collection, generator, updater,
+and pet UI are maintained here. The original Quote Cards Git history is preserved
+in this repository; a separate `quote-cards` checkout is no longer needed. Quotes
+run entirely on the pet, including when the PC host service is disconnected.
+
 To add or change a quote, edit [quotes/quotes.json](quotes/quotes.json). Add an
 object inside the existing array, separating entries with commas:
 
