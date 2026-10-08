@@ -1,35 +1,42 @@
 #!/usr/bin/env python3
 """A small desktop flash card for the Markdown + JSON quote collection."""
 
+import argparse
 import json
 from pathlib import Path
 import random
 import tkinter as tk
-from tkinter import messagebox
 import webbrowser
 
 
-QUOTES_DIR = Path(__file__).resolve().parent / "quotes"
+QUOTES_FILE = Path(__file__).resolve().parent / "quotes.json"
 BACKGROUND = "#f5f2eb"
 FOREGROUND = "#26372e"
 MUTED = "#6b786e"
 
 
-def load_quotes(directory=QUOTES_DIR):
-    quotes = []
-    for path in sorted(directory.glob("*.md")):
-        metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
-        text = path.read_text(encoding="utf-8").strip()
-        if not text or not isinstance(metadata, dict) or not all(
-            isinstance(metadata.get(key), str) and metadata[key].strip()
-            for key in ("category", "source")
+def load_quotes(path=QUOTES_FILE):
+    quotes = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(quotes, list) or not quotes:
+        raise ValueError(f"{path.name} must contain a nonempty list of quotes.")
+    for index, quote in enumerate(quotes, start=1):
+        if not isinstance(quote, dict) or not all(
+            isinstance(quote.get(key), str) and quote[key].strip()
+            for key in ("text", "category", "source")
         ):
-            raise ValueError(f"{path.stem}: quote, category and source must be nonempty.")
-        quotes.append({"text": text, "category": metadata["category"],
-                       "source": metadata["source"]})
-    if not quotes:
-        raise ValueError(f"No quotes found in {directory}.")
+            raise ValueError(f"Quote {index}: text, category and source must be nonempty.")
     return quotes
+
+
+def export_markdown(quotes):
+    sections = ["# Quotes\n"]
+    for index, quote in enumerate(quotes, start=1):
+        sections.append(
+            f"## {index}\n\n{quote['text']}\n\n"
+            f"**Category:** {quote['category']}\n\n"
+            f"**Source:** {quote['source']}\n"
+        )
+    QUOTES_FILE.with_suffix(".md").write_text("\n".join(sections), encoding="utf-8")
 
 
 class FlashCards:
@@ -85,16 +92,19 @@ class FlashCards:
 
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--export-md", action="store_true",
+                        help="Update quotes.md from quotes.json without opening the app")
+    args = parser.parse_args()
     try:
         quotes = load_quotes()
     except (OSError, ValueError) as error:
-        messagebox.showerror("Could not load quotes", str(error), parent=root)
-        root.destroy()
+        raise SystemExit(f"Could not load quotes: {error}") from error
+    if args.export_md:
+        export_markdown(quotes)
         return
+    root = tk.Tk()
     FlashCards(root, quotes)
-    root.deiconify()
     root.mainloop()
 
 

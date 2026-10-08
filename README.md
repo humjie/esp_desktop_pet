@@ -19,25 +19,26 @@ browser. Space and the right arrow change cards; Escape closes the window.
 
 ## Add a quote, idea or learning
 
-Create two files in `quotes/` with the same name:
-
-**my-idea.md** — the text shown on the card:
-
-```md
-Write your quote or idea here.
-```
-
-**my-idea.json** — its category and source:
+All entries are stored together in **quotes.json**, which the app reads.
+**quotes.md** is the readable Markdown copy of the whole collection.
+Add an object to the list in `quotes.json`:
 
 ```json
 {
+  "text": "Write your quote or idea here.",
   "category": "help me think",
   "source": "https://example.com/your-source"
 }
 ```
 
-Restart the app to load additions or edits. Markdown files are displayed as plain
-text, so keep them short; line breaks and simple numbered lists work well.
-The text lives only in Markdown, and the metadata lives only in JSON.
+Separate objects with commas. Use `\n` inside the text for line breaks.
+After editing JSON, update the Markdown copy:
 
-The two original entries are included in `quotes/`.
+```sh
+python3 app.py --export-md
+```
+
+Restart the app to load additions or edits. Keep entries short so they fit the card.
+Edit `quotes.json`; regenerating Markdown replaces `quotes.md`.
+
+The two original entries are included in both files.
