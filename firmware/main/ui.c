@@ -6,6 +6,8 @@
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_random.h"
+#include "quotes.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "bsp/display.h"
@@ -28,6 +30,27 @@ static const char *TAG = "ui";
 /* Screen objects */
 static lv_obj_t *s_scr_idle = NULL;
 static lv_obj_t *s_scr_ai   = NULL;
+static lv_obj_t *s_scr_quotes = NULL;
+static lv_timer_t *s_ui_timer = NULL;
+static lv_obj_t *s_quote_text = NULL;
+static lv_obj_t *s_quote_category = NULL;
+
+static int s_quote_index = -1;
+
+static void ui_load_screen(lv_obj_t *screen)
+{
+    lv_scr_load(screen);
+    if (s_ui_timer) {
+        lv_timer_set_period(s_ui_timer, screen == s_scr_idle ? 40 : 200);
+    }
+}
+
+static void set_label_text_if_changed(lv_obj_t *label, const char *text)
+{
+    if (strcmp(lv_label_get_text(label), text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
 
 /* Clock widgets on Idle Screen */
 static lv_obj_t *s_clock_time = NULL;
@@ -142,7 +165,7 @@ static const emotion_palette_t s_palettes[PET_EMOTION_COUNT] = {
 };
 
 static pet_emotion_t s_current_emotion = PET_EMOTION_HAPPY;
-static int s_love_countdown = 0;
+static int64_t s_love_until_us = 0;
 
 /* --------------------------------------------------------------------------
  * Pet Appearance State
@@ -264,11 +287,11 @@ void ui_cycle_appearance(void)
     /* Make sure pet screen is active when switching */
     lv_disp_t *disp = lv_disp_get_default();
     if (disp && lv_disp_get_scr_act(disp) != s_scr_idle) {
-        lv_scr_load(s_scr_idle);
+        ui_load_screen(s_scr_idle);
     }
 
     /* Joyful bounce upon transformation */
-    s_love_countdown = 75; // ~3s of happy Love reaction
+    s_love_until_us = esp_timer_get_time() + 3000000LL; // ~3s of happy Love reaction
 
     nvs_save_pet_type();
 
@@ -279,14 +302,14 @@ void ui_cycle_appearance(void)
 
 static bool s_voice_listening = false;
 static char s_voice_feedback_buf[64] = {0};
-static int  s_voice_feedback_timer = 0;
+static int64_t s_voice_feedback_until_us = 0;
 
 void ui_set_voice_listening(bool listening)
 {
     s_voice_listening = listening;
     if (s_clock_date) {
         if (listening) {
-            lv_label_set_text(s_clock_date, "• LISTENING...");
+            set_label_text_if_changed(s_clock_date, "• LISTENING...");
             lv_obj_set_style_text_color(s_clock_date, lv_color_hex(0x00E5FF), 0);
         }
     }
@@ -295,21 +318,21 @@ void ui_set_voice_listening(bool listening)
 void ui_trigger_voice_reaction(pet_emotion_t emotion, const char *feedback_text)
 {
     s_current_emotion = emotion;
-    s_love_countdown = 75; // ~3 seconds reaction
+    s_love_until_us = esp_timer_get_time() + 3000000LL; // ~3 seconds reaction
     s_voice_listening = false;
 
     /* If on AI status screen, switch back to face */
     lv_disp_t *disp = lv_disp_get_default();
     if (disp && s_scr_idle && lv_disp_get_scr_act(disp) != s_scr_idle) {
-        lv_scr_load(s_scr_idle);
+        ui_load_screen(s_scr_idle);
     }
 
     if (feedback_text && feedback_text[0] != '\0') {
         strncpy(s_voice_feedback_buf, feedback_text, sizeof(s_voice_feedback_buf) - 1);
         s_voice_feedback_buf[sizeof(s_voice_feedback_buf) - 1] = '\0';
-        s_voice_feedback_timer = 75; // ~3 seconds
+        s_voice_feedback_until_us = esp_timer_get_time() + 3000000LL; // ~3 seconds
         if (s_clock_date) {
-            lv_label_set_text(s_clock_date, s_voice_feedback_buf);
+            set_label_text_if_changed(s_clock_date, s_voice_feedback_buf);
             lv_obj_set_style_text_color(s_clock_date, lv_color_hex(0xFF375F), 0);
         }
     }
@@ -322,33 +345,36 @@ void ui_show_ai_mode(bool show)
 
     if (show && s_scr_ai) {
         if (lv_disp_get_scr_act(disp) != s_scr_ai) {
-            lv_scr_load(s_scr_ai);
+            ui_load_screen(s_scr_ai);
         }
     } else if (!show && s_scr_idle) {
         if (lv_disp_get_scr_act(disp) != s_scr_idle) {
-            lv_scr_load(s_scr_idle);
-            s_love_countdown = 60;
+            ui_load_screen(s_scr_idle);
+            s_love_until_us = esp_timer_get_time() + 2400000LL;
         }
     }
 }
 
 static int s_current_brightness = 50;
-static int64_t s_last_rgb_touch_us = 0;
 static int64_t s_last_night_touch_us = 0;
 
-/* Top-Left: RGB Toggle */
+/* Top-Left: open a quote, or choose a different random quote. */
 static void quad_top_left_cb(lv_event_t *e)
 {
-    int64_t now = esp_timer_get_time();
-    if (now - s_last_rgb_touch_us < 600000LL) {
-        return; // 600ms debounce
+    (void)e;
+    if (deskpet_quote_count > 0) {
+        /* Pick among all entries except the currently displayed one. */
+        int choices = deskpet_quote_count - (s_quote_index >= 0 && deskpet_quote_count > 1 ? 1 : 0);
+        int next = (int)(esp_random() % (uint32_t)choices);
+        if (deskpet_quote_count > 1 && s_quote_index >= 0 && next >= s_quote_index) {
+            next++;
+        }
+        s_quote_index = next;
+        lv_label_set_text_static(s_quote_text, deskpet_quotes[next].text);
+        lv_label_set_text_static(s_quote_category, deskpet_quotes[next].category);
     }
-    s_last_rgb_touch_us = now;
-
-    s_love_countdown = 60; // Momentary sweet reaction
-    printf("CMD,RGB_TOGGLE\n");
-    fflush(stdout);
-    ESP_LOGI(TAG, "Touch [Top-Left]: Toggled RGB");
+    ui_load_screen(s_scr_quotes);
+    ESP_LOGI(TAG, "Touch [Top-Left]: Quote %d", s_quote_index + 1);
 }
 
 /* Top-Right: Monitor Brightness 0% / Night Mode <-> 30% / Day Mode (ESP 0% <-> 50%) */
@@ -367,7 +393,7 @@ static void quad_top_right_cb(lv_event_t *e)
     } else {
         s_current_brightness = 50;
         bsp_display_brightness_set(50);
-        s_love_countdown = 75; // Sweet reaction on wake
+        s_love_until_us = esp_timer_get_time() + 3000000LL; // Sweet reaction on wake
         ESP_LOGI(TAG, "Touch [Top-Right]: Night Mode OFF (ESP -> 50%%)");
     }
     printf("CMD,NIGHT_TOGGLE\n");
@@ -377,15 +403,15 @@ static void quad_top_right_cb(lv_event_t *e)
 /* Bottom Row: Switch to System Status screen */
 static void bottom_row_status_cb(lv_event_t *e)
 {
-    lv_scr_load(s_scr_ai);
+    ui_load_screen(s_scr_ai);
     ESP_LOGI(TAG, "Touch [Bottom Row]: Switched to SYSTEM STATUS screen");
 }
 
 /* Return from AI Mode Screen to Pet Face */
 static void ai_screen_back_cb(lv_event_t *e)
 {
-    lv_scr_load(s_scr_idle);
-    s_love_countdown = 75; // ~3s of happy Love react when returning to pet
+    ui_load_screen(s_scr_idle);
+    s_love_until_us = esp_timer_get_time() + 3000000LL; // ~3s of happy Love react when returning to pet
     ESP_LOGI(TAG, "Touch: Switched to PET screen");
 }
 
@@ -398,11 +424,11 @@ void ui_toggle_ai_mode(void)
     }
     lv_obj_t *act = lv_disp_get_scr_act(disp);
     if (act == s_scr_idle) {
-        lv_scr_load(s_scr_ai);
+        ui_load_screen(s_scr_ai);
         ESP_LOGI(TAG, "Button: switched to SYSTEM STATUS screen");
     } else {
-        lv_scr_load(s_scr_idle);
-        s_love_countdown = 75; // ~3s of happy Love react
+        ui_load_screen(s_scr_idle);
+        s_love_until_us = esp_timer_get_time() + 3000000LL; // ~3s of happy Love react
         ESP_LOGI(TAG, "Button: switched to PET screen");
     }
 }
@@ -647,13 +673,13 @@ static void create_idle_screen(void)
     s_clock_time = lv_label_create(s_scr_idle);
     lv_obj_set_style_text_font(s_clock_time, &lv_font_montserrat_40, 0);
     lv_obj_set_style_text_color(s_clock_time, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(s_clock_time, "--:--");
+    set_label_text_if_changed(s_clock_time, "--:--");
     lv_obj_align(s_clock_time, LV_ALIGN_TOP_MID, 0, 6);
 
     s_clock_date = lv_label_create(s_scr_idle);
     lv_obj_set_style_text_font(s_clock_date, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_clock_date, lv_color_hex(0x70A5FF), 0);
-    lv_label_set_text(s_clock_date, "DESK PET READY");
+    set_label_text_if_changed(s_clock_date, "DESK PET READY");
     lv_obj_align(s_clock_date, LV_ALIGN_TOP_MID, 0, 50);
 
     /* ----------------------------------------------------------------------
@@ -719,6 +745,36 @@ static void create_ai_screen(void)
     create_metric_row(s_scr_ai, 190, "TEMP", lv_color_hex(0xFF453A), &s_temp_val, &s_temp_bar);
 
     add_touch_zone(s_scr_ai, 0, 0, SCREEN_W, SCREEN_H, ai_screen_back_cb);
+}
+
+static void create_quotes_screen(void)
+{
+    s_scr_quotes = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_quotes, lv_color_hex(0x101820), 0);
+    lv_obj_set_style_bg_opa(s_scr_quotes, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_scr_quotes, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_quote_category = lv_label_create(s_scr_quotes);
+    lv_obj_set_pos(s_quote_category, 16, 12);
+    lv_obj_set_width(s_quote_category, 288);
+    lv_label_set_long_mode(s_quote_category, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(s_quote_category, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_quote_category, lv_color_hex(0x30D158), 0);
+    lv_label_set_text(s_quote_category, "QUOTES");
+
+    s_quote_text = lv_label_create(s_scr_quotes);
+    lv_obj_set_pos(s_quote_text, 16, 44);
+    lv_obj_set_size(s_quote_text, 288, 150);
+    lv_label_set_long_mode(s_quote_text, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_quote_text, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_quote_text, lv_color_hex(0xEBEBF5), 0);
+    lv_obj_set_style_text_line_space(s_quote_text, 5, 0);
+    lv_label_set_text(s_quote_text, "No quotes available.");
+
+    /* The other zones only exit; they never toggle night mode or status. */
+    add_touch_zone(s_scr_quotes, 0, 0, SCREEN_W / 2, SCREEN_H / 2, quad_top_left_cb);
+    add_touch_zone(s_scr_quotes, SCREEN_W / 2, 0, SCREEN_W / 2, SCREEN_H / 2, ai_screen_back_cb);
+    add_touch_zone(s_scr_quotes, 0, SCREEN_H / 2, SCREEN_W, SCREEN_H / 2, ai_screen_back_cb);
 }
 
 /* Face animation state machine tick (runs every ~40ms = 25 FPS) */
@@ -922,12 +978,24 @@ static void face_anim_tick(void)
 /* Update Telemetry on AI Screen + Clock on Idle Screen */
 static void telemetry_update_tick(void)
 {
-    pet_telemetry_t t = telemetry_get();
+    static pet_telemetry_t t;
+    static int64_t next_sample_us = 0;
+    static lv_obj_t *previous_screen = NULL;
+    static pet_emotion_t painted_emotion = PET_EMOTION_COUNT;
+    static int previous_subtitle = -1;
+    int64_t now = esp_timer_get_time();
+    bool fresh_sample = now >= next_sample_us;
+    if (fresh_sample) {
+        t = telemetry_get();
+        next_sample_us = now + 1000000LL;
+    }
+    lv_obj_t *screen = lv_scr_act();
+    bool screen_changed = screen != previous_screen;
+    previous_screen = screen;
 
     /* 1. Evaluate Emotion State Machine (Tabbie-inspired) */
-    if (s_love_countdown > 0) {
+    if (now < s_love_until_us) {
         s_current_emotion = PET_EMOTION_LOVE;
-        s_love_countdown--;
     } else if (t.has_data) {
         if (t.gpu_temp_c >= 70 || t.cpu_pct >= 85 || t.gpu_pct >= 85) {
             s_current_emotion = PET_EMOTION_HOT;
@@ -943,16 +1011,21 @@ static void telemetry_update_tick(void)
     }
 
     const emotion_palette_t *p = &s_palettes[s_current_emotion];
+    bool palette_changed = painted_emotion != s_current_emotion;
+    int subtitle = s_voice_listening ? 1 : (now < s_voice_feedback_until_us ? 2 : 0);
+    bool subtitle_changed = subtitle != previous_subtitle;
+    previous_subtitle = subtitle;
 
     /* 2. Update Clock & Date on Idle Screen */
-    if (t.has_data) {
+    if (t.has_data && screen == s_scr_idle &&
+        (fresh_sample || screen_changed || palette_changed || subtitle_changed)) {
         time_t local_sec = (time_t)(t.epoch_utc + TIMEZONE_OFFSET_SEC);
         struct tm tm_info;
         gmtime_r(&local_sec, &tm_info);
 
         char time_str[16];
         snprintf(time_str, sizeof(time_str), "%02d:%02d", tm_info.tm_hour, tm_info.tm_min);
-        lv_label_set_text(s_clock_time, time_str);
+        set_label_text_if_changed(s_clock_time, time_str);
 
         static const char *days[] = {
             "SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"
@@ -961,11 +1034,10 @@ static void telemetry_update_tick(void)
             "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
         };
         if (s_voice_listening) {
-            lv_label_set_text(s_clock_date, "• LISTENING...");
+            set_label_text_if_changed(s_clock_date, "• LISTENING...");
             lv_obj_set_style_text_color(s_clock_date, lv_color_hex(0x00E5FF), 0);
-        } else if (s_voice_feedback_timer > 0) {
-            s_voice_feedback_timer--;
-            lv_label_set_text(s_clock_date, s_voice_feedback_buf);
+        } else if (now < s_voice_feedback_until_us) {
+            set_label_text_if_changed(s_clock_date, s_voice_feedback_buf);
             lv_obj_set_style_text_color(s_clock_date, lv_color_hex(0xFF375F), 0);
         } else {
             char date_str[64];
@@ -973,65 +1045,73 @@ static void telemetry_update_tick(void)
                      days[tm_info.tm_wday % 7], tm_info.tm_mday,
                      months[tm_info.tm_mon % 12], tm_info.tm_year + 1900,
                      p->status_tag);
-            lv_label_set_text(s_clock_date, date_str);
+            set_label_text_if_changed(s_clock_date, date_str);
             lv_obj_set_style_text_color(s_clock_date, lv_color_hex(p->text_color), 0);
         }
     }
 
-    /* 3. Apply Active Emotion Colors */
-    lv_obj_set_style_bg_color(s_eye_l, lv_color_hex(p->eye_color), 0);
-    lv_obj_set_style_bg_color(s_eye_r, lv_color_hex(p->eye_color), 0);
-    lv_obj_set_style_arc_color(s_eye_l_smile, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(s_eye_r_smile, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
+    /* Repaint styles only when the mood actually changes. */
+    if (palette_changed && screen == s_scr_idle) {
+        painted_emotion = s_current_emotion;
+        /* 3. Apply Active Emotion Colors */
+        lv_obj_set_style_bg_color(s_eye_l, lv_color_hex(p->eye_color), 0);
+        lv_obj_set_style_bg_color(s_eye_r, lv_color_hex(p->eye_color), 0);
+        lv_obj_set_style_arc_color(s_eye_l_smile, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(s_eye_r_smile, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
 
-    if (s_brow_l) lv_obj_set_style_bg_color(s_brow_l, lv_color_hex(p->eye_color), 0);
-    if (s_brow_r) lv_obj_set_style_bg_color(s_brow_r, lv_color_hex(p->eye_color), 0);
-    if (s_mouth)  lv_obj_set_style_arc_color(s_mouth,  lv_color_hex(p->eye_color), LV_PART_INDICATOR);
+        if (s_brow_l) lv_obj_set_style_bg_color(s_brow_l, lv_color_hex(p->eye_color), 0);
+        if (s_brow_r) lv_obj_set_style_bg_color(s_brow_r, lv_color_hex(p->eye_color), 0);
+        if (s_mouth)  lv_obj_set_style_arc_color(s_mouth,  lv_color_hex(p->eye_color), LV_PART_INDICATOR);
 
-    if (s_blush_l && s_blush_r) {
-        lv_obj_set_style_bg_color(s_blush_l, lv_color_hex(p->blush_color), 0);
-        lv_obj_set_style_bg_color(s_blush_r, lv_color_hex(p->blush_color), 0);
-        lv_obj_set_style_bg_opa(s_blush_l, p->blush_opa, 0);
-        lv_obj_set_style_bg_opa(s_blush_r, p->blush_opa, 0);
+        if (s_blush_l && s_blush_r) {
+            lv_obj_set_style_bg_color(s_blush_l, lv_color_hex(p->blush_color), 0);
+            lv_obj_set_style_bg_color(s_blush_r, lv_color_hex(p->blush_color), 0);
+            lv_obj_set_style_bg_opa(s_blush_l, p->blush_opa, 0);
+            lv_obj_set_style_bg_opa(s_blush_r, p->blush_opa, 0);
+        }
+
+        /* Cat reactive theme colors */
+        if (s_cat_ear_l)   lv_obj_set_style_line_color(s_cat_ear_l, lv_color_hex(p->eye_color), 0);
+        if (s_cat_ear_r)   lv_obj_set_style_line_color(s_cat_ear_r, lv_color_hex(p->eye_color), 0);
+        if (s_cat_mouth_l) lv_obj_set_style_arc_color(s_cat_mouth_l, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
+        if (s_cat_mouth_r) lv_obj_set_style_arc_color(s_cat_mouth_r, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
+
     }
 
-    /* Cat reactive theme colors */
-    if (s_cat_ear_l)   lv_obj_set_style_line_color(s_cat_ear_l, lv_color_hex(p->eye_color), 0);
-    if (s_cat_ear_r)   lv_obj_set_style_line_color(s_cat_ear_r, lv_color_hex(p->eye_color), 0);
-    if (s_cat_mouth_l) lv_obj_set_style_arc_color(s_cat_mouth_l, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
-    if (s_cat_mouth_r) lv_obj_set_style_arc_color(s_cat_mouth_r, lv_color_hex(p->eye_color), LV_PART_INDICATOR);
+    /* Keep hidden dashboard widgets untouched. */
+    if (screen != s_scr_ai || (!fresh_sample && !screen_changed)) return;
 
     /* 4. Update Load Metrics on AI Dashboard */
     char buf[32];
 
     // CPU
     snprintf(buf, sizeof(buf), "%d %%", t.cpu_pct);
-    lv_label_set_text(s_cpu_val, buf);
+    set_label_text_if_changed(s_cpu_val, buf);
     lv_bar_set_value(s_cpu_bar, t.cpu_pct, LV_ANIM_OFF);
 
     // RAM
     snprintf(buf, sizeof(buf), "%.2f / %.2f GB",
              (t.ram_used_mb / 1024.0f), (t.ram_total_mb / 1024.0f));
-    lv_label_set_text(s_ram_val, buf);
+    set_label_text_if_changed(s_ram_val, buf);
     int ram_max = (t.ram_total_mb > 0) ? (int)t.ram_total_mb : 100;
     lv_bar_set_range(s_ram_bar, 0, ram_max);
     lv_bar_set_value(s_ram_bar, (int)t.ram_used_mb, LV_ANIM_OFF);
 
     // GPU
     snprintf(buf, sizeof(buf), "%d %%", t.gpu_pct);
-    lv_label_set_text(s_gpu_val, buf);
+    set_label_text_if_changed(s_gpu_val, buf);
     lv_bar_set_value(s_gpu_bar, t.gpu_pct, LV_ANIM_OFF);
 
     // GPU Temp
     snprintf(buf, sizeof(buf), "%d C", t.gpu_temp_c);
-    lv_label_set_text(s_temp_val, buf);
+    set_label_text_if_changed(s_temp_val, buf);
     lv_bar_set_range(s_temp_bar, 0, 120);
     lv_bar_set_value(s_temp_bar, t.gpu_temp_c, LV_ANIM_OFF);
 
     // VRAM
     snprintf(buf, sizeof(buf), "%.2f / %.2f GB",
              (t.vram_used_mb / 1024.0f), (t.vram_total_mb / 1024.0f));
-    lv_label_set_text(s_vram_val, buf);
+    set_label_text_if_changed(s_vram_val, buf);
     int vram_max = (t.vram_total_mb > 0) ? (int)t.vram_total_mb : 100;
     lv_bar_set_range(s_vram_bar, 0, vram_max);
     lv_bar_set_value(s_vram_bar, (int)t.vram_used_mb, LV_ANIM_OFF);
@@ -1040,13 +1120,15 @@ static void telemetry_update_tick(void)
 /* Master UI Timer Callback (40ms interval = 25 FPS) */
 static void ui_timer_cb(lv_timer_t *timer)
 {
-    /* Animate face every tick */
-    face_anim_tick();
+    (void)timer;
+    if (lv_scr_act() == s_scr_idle) {
+        face_anim_tick();
+    }
 
-    /* Update telemetry and clock every 5 ticks (~200ms) */
-    static int s_telemetry_tick = 0;
-    if (++s_telemetry_tick >= 5) {
-        s_telemetry_tick = 0;
+    static int64_t next_refresh_us = 0;
+    int64_t now = esp_timer_get_time();
+    if (now >= next_refresh_us) {
+        next_refresh_us = now + 200000LL;
         telemetry_update_tick();
     }
 }
@@ -1067,12 +1149,13 @@ void ui_init(void)
     /* 2. Build idle and AI screens */
     create_idle_screen();
     create_ai_screen();
+    create_quotes_screen();
 
     /* 3. Start on Idle Screen */
-    lv_scr_load(s_scr_idle);
+    ui_load_screen(s_scr_idle);
 
     /* 4. Create animation & refresh timer (runs in LVGL context) */
-    lv_timer_create(ui_timer_cb, 40, NULL);
+    s_ui_timer = lv_timer_create(ui_timer_cb, 40, NULL);
 
     ESP_LOGI(TAG, "Desk Pet UI initialized successfully (Active appearance: %s)",
              s_pet_type_names[s_current_pet_type]);

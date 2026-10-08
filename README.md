@@ -2,7 +2,7 @@
 
 An interactive, animated desktop pet, voice assistant, and live workstation telemetry companion built for the **Espressif ESP32-S3-BOX-3**, connected via a single USB-C cable to an Ubuntu / Linux workstation.
 
-Desk Pet combines a responsive, procedurally-drawn emotional face with real-time workstation hardware telemetry, dual-zone touchscreen shortcuts for PC lighting and night mode, dual microphone voice control with local AI transcription (`faster-whisper`), and full hardware integration.
+Desk Pet combines a responsive, procedurally-drawn emotional face with real-time workstation hardware telemetry, touchscreen quote cards and night mode, dual microphone voice control with local AI transcription (`faster-whisper`), and full hardware integration.
 
 ---
 
@@ -65,9 +65,133 @@ The 2.4" display (GT911 capacitive touch) features 3 invisible hotzones:
 
 | Touch Area | Screen Region (X, Y) | Function | Behavior |
 | :--- | :--- | :--- | :--- |
-| **Top-Left** | `(0, 0)` to `(160, 120)` | **PC RGB Toggle** | Toggles all workstation lighting (case/cooler fans + DDR5 RAM) between **Speed-2 Rainbow** and **Off**. |
+| **Top-Left** | `0 <= X < 160, 0 <= Y < 120` | **Quote Cards** | Opens a random quote and its category. Tap the same area again for a different quote. |
 | **Top-Right** | `(160, 0)` to `(320, 120)` | **Night Mode Toggle** | Dims workstation monitors to 0%, enables GNOME Night Light, and turns off the BOX-3 screen. Tap again to restore day mode. |
 | **Bottom Row** | `(0, 120)` to `(320, 240)` | **System Status** | Toggles between the animated Pet face and the live System Status dashboard. |
+
+While viewing a quote, tapping anywhere outside the top-left area returns directly
+to the main pet screen. It does not activate night mode or the status dashboard.
+With two quotes, successive cards alternate. The home button also returns to the pet.
+RGB lighting remains available through voice commands.
+
+### Quote collection
+
+To add or change a quote, edit [quotes/quotes.json](quotes/quotes.json). Add an
+object inside the existing array, separating entries with commas:
+
+```json
+{
+  "text": "Write your quote or idea here.\nLine breaks are supported.",
+  "category": "decision-making",
+  "source": "https://example.com/your-source"
+}
+```
+
+The file is a JSON array. Each entry needs nonempty `text` and `category` strings;
+`source` is optional, retained for reference, and is not shown on the device. Keep
+text short enough for the 320 × 240 display. Use `\n` for line breaks.
+
+Save the JSON, connect the pet by USB, and run this command from the Desk Pet
+repository directory:
+
+```bash
+./update-quotes.sh
+```
+
+The [update-quotes.sh](update-quotes.sh) script validates every entry, regenerates
+`quotes/quotes.md`, activates the
+installed ESP-IDF environment, builds firmware, and flashes the pet. It stops an
+active `deskpet.service` only for flashing and restarts it afterward, including
+when flashing fails. A service that was already stopped stays stopped.
+You only need to edit the JSON; the script maintains the Markdown copy.
+Invalid JSON or missing required fields stop the update before building or flashing.
+
+To check the collection without changing any files or flashing:
+
+```bash
+./update-quotes.sh --check
+```
+
+If the pet uses another serial device:
+
+```bash
+./update-quotes.sh --port /dev/ttyACM1
+```
+
+The default serial device is `/dev/ttyACM0`; `DESKPET_PORT` can also override it.
+The SDK defaults to `~/esp/esp-idf`; `IDF_PATH` and `IDF_PYTHON_ENV_PATH` override its
+location and Python environment. CMake generates a C table from the JSON at build
+time. Quote text and categories stay in ESP flash; the device needs no JSON parser,
+desktop app, or extra service.
+
+### Runtime efficiency
+
+Firmware computation runs in C. The PC uses Python for command orchestration and
+native C/C++ libraries for speech inference and GPU metric queries. Whisper uses
+CPU `int8` inference, and Piper explicitly uses ONNX Runtime's CPU provider.
+Reading GPU/VRAM metrics through NVML does not run GPU computation or allocate VRAM.
+
+- **PC:** serial input blocks until data arrives and reads batches; telemetry uses
+  CPU counter deltas without a sampling sleep. NVML replaces a new `nvidia-smi`
+  process each tick, with a fallback for machines where NVML is unavailable.
+- **Speech:** models stay loaded for fast responses. One recognition worker and
+  one synthesis worker use bounded queues. Piper's idle thread spinning is disabled,
+  and synthesized audio streams sentence by sentence instead of collecting the
+  entire response first. Audio pacing limits buffered lead to 64 ms. After speech
+  work, unused native heap pages are returned to the OS; loaded models stay ready.
+- **ESP:** the visible pet still animates at 25 FPS. Other screens use a slower
+  refresh timer, hidden face animation stops, and dashboard widgets update only
+  while visible. Telemetry is sampled at 1 Hz; labels and mood colors update when
+  their values change. Chimes use a 1 KiB chunk buffer instead of an 11–13 KiB
+  temporary allocation, and quote labels reference flash strings directly.
+- **Logging:** telemetry summaries default to once per minute, and the PC log
+  rotates at 1 MiB with two backups.
+
+Measured results on an AMD Ryzen 7 7700 workstation, using five runs with identical
+recorded audio for recognition and the same two-sentence text for synthesis:
+
+| Metric | Before optimization | After optimization |
+| :--- | ---: | ---: |
+| Median speech recognition time | 188 ms | 133 ms |
+| Median time until first synthesized audio is ready | 47 ms | 24 ms |
+| Median retained process RAM after speech work | 355 MiB | 281 MiB |
+| Peak process RAM during the benchmark | 413 MiB | 352 MiB |
+
+Both versions produced the same transcription. The first-audio measurement
+excludes serial transport and speaker playback: the old host collected the whole
+response before sending it, while the optimized host can send the first sentence
+as soon as it is synthesized. These measurements use `tiny.en` CPU `int8` speech
+recognition and the `en_US-lessac-low` Piper voice; results vary with CPU, input,
+and background workload. The live service was also checked after warm-up and
+speaker streaming; resource use grows with the inference workspace needed by
+longer recordings.
+
+Validation included the PC regression tests, simulated LVGL touch routing and
+quote layout checks, a firmware build and flash, and a speaker-stream smoke test.
+
+Optional settings in `~/.config/deskpet/deskpet.conf`:
+
+```ini
+[deskpet]
+interval_s = 1.0
+speech_threads = 4
+tts_threads = 6
+tts_memory_arena = false
+telemetry_log_interval_s = 60.0
+log_level = INFO
+```
+
+Restart `deskpet.service` after changing these settings. Enabling
+`tts_memory_arena` retains more inference workspace for reuse; the default frees
+that workspace between requests to reduce resident memory. Thread settings can
+be tuned for another CPU. Models and real-time audio buffers remain resident
+because unloading them would delay voice responses.
+
+Run the PC regression checks from the repository directory:
+
+```bash
+python3 -m unittest discover -s host -p test_runtime.py
+```
 
 ---
 
@@ -123,15 +247,23 @@ esp_desktop_pet/
 │       ├── ui.c / ui.h             # LVGL 8 UI: procedural face animations & status dashboard
 │       ├── audio.c / audio.h       # ES7210 mic capture, VAD, ES8311 speaker chime
 │       ├── telemetry.c / .h        # CSV protocol parser, metrics store, thread safety
+│       ├── quotes.h                # Interface to the generated flash quote table
 │       ├── idf_component.yml       # Component requirements
 │       └── CMakeLists.txt
 ├── host/                           # Ubuntu host-side service
 │   ├── deskpet_host.py             # System telemetry collector, voice transcription & control
+│   ├── metrics.py                  # CPU/RAM sampling and native NVML metric queries
+│   ├── test_runtime.py             # Telemetry, serial, audio, and queue regression checks
 │   ├── deskpet.service             # systemd service unit for auto-start on boot
 │   ├── 99-deskpet.rules            # udev rule granting user access to /dev/ttyACM0
 │   ├── requirements.txt            # Python dependencies (pyserial, faster-whisper)
 │   └── install.sh                  # Host service installer script
 ├── .gitignore                      # Ignore rules for build artifacts and virtualenvs
+├── quotes/                         # Quote Cards collection embedded in firmware
+│   ├── quotes.json                 # Quote text, category, and source
+│   ├── quotes.md                   # Readable collection copy
+│   └── generate.py                 # Shared validation, Markdown export, and C table generator
+├── update-quotes.sh                # Validate, export, build, flash, restore host service
 └── README.md                       # Complete documentation
 ```
 
@@ -219,7 +351,6 @@ AUD,END\n
 
 ### Bidirectional Control Commands
 - **Firmware → Host**:
-  - `CMD,RGB_TOGGLE\n`: Toggles all workstation RGB devices (Fans & RAM).
   - `CMD,NIGHT_TOGGLE\n`: Toggles workstation night mode and monitor brightness.
 - **Host → Firmware**:
   - `CMD,VOICE_RESP,<EMOTION>,<SUBTITLE_TEXT>\n`: Triggers visual celebration, chime, and displays subtitle text.

@@ -139,7 +139,7 @@ static void serial_rx_task(void *pvParameters)
     ESP_LOGI(TAG, "Serial RX task started (USB Serial/JTAG console)");
 
     while (1) {
-        int len = usb_serial_jtag_read_bytes(s_rx_raw_buf, sizeof(s_rx_raw_buf), pdMS_TO_TICKS(10));
+        int len = usb_serial_jtag_read_bytes(s_rx_raw_buf, sizeof(s_rx_raw_buf), portMAX_DELAY);
         if (len > 0) {
             for (int i = 0; i < len; i++) {
                 char c = (char)s_rx_raw_buf[i];

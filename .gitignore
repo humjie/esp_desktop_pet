@@ -11,6 +11,7 @@ host/models/**/*.onnx.json
 *.py[cod]
 *$py.class
 *.log
+.update-quotes.lock
 
 # Local logs and user config
 .config/

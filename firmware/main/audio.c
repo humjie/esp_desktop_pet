@@ -43,90 +43,72 @@ static volatile uint32_t s_spk_cur_rms = 0;
 static volatile TickType_t s_last_spk_play_ticks = 0;
 static int s_spk_volume = 70; // 70% volume for clean audio without mic saturation
 
-/* Soft, friendly wake ring when 'meow' is heard (gentle 2-note bell: A5 -> E6) */
-void audio_play_soft_wake_ring(void)
+/* Generate both bells in bounded chunks rather than allocating 11-13 KB.
+ * An oscillator recurrence avoids a transcendental function for each sample. */
+static void audio_play_ring(bool confirmation)
 {
     if (!s_spk_dev || !s_spk_mutex) return;
     s_chime_playing = true;
     s_speaker_active = true;
-
-    const int num_samples = (int)(AUDIO_SAMPLE_RATE * 0.18f); // 180ms
-    int16_t *stereo_buf = malloc(num_samples * 2 * sizeof(int16_t));
-    if (!stereo_buf) {
+    if (xSemaphoreTake(s_spk_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
         s_chime_playing = false;
         s_speaker_active = false;
         return;
     }
 
-    for (int i = 0; i < num_samples; i++) {
-        float t = (float)i / (float)AUDIO_SAMPLE_RATE;
-        float freq;
-        float amp = 7500.0f; // Soft, gentle amplitude
-
-        if (t < 0.08f) {
-            freq = 880.00f; // A5
-            amp *= (1.0f - (t / 0.08f) * 0.25f);
-        } else {
-            freq = 1318.51f; // E6
-            amp *= (1.0f - ((t - 0.08f) / 0.10f)); // Smooth fade out
+    const int split = confirmation ? 1440 : 1280;
+    const int total = confirmation ? 3200 : 2880;
+    const float amplitude = confirmation ? 9500.0f : 7500.0f;
+    const float taper = confirmation ? 0.20f : 0.25f;
+    const float frequencies[2] = {
+        confirmation ? 1046.50f : 880.00f,
+        confirmation ? 1567.98f : 1318.51f,
+    };
+    float sin_step[2], cos_step[2];
+    for (int note = 0; note < 2; note++) {
+        float step = 2.0f * (float)M_PI * frequencies[note] / AUDIO_SAMPLE_RATE;
+        sin_step[note] = sinf(step);
+        cos_step[note] = cosf(step);
+    }
+    float sine = 0.0f, cosine = 1.0f;
+    int16_t stereo[256 * 2];
+    for (int offset = 0; offset < total; offset += 256) {
+        int count = total - offset;
+        if (count > 256) count = 256;
+        for (int j = 0; j < count; j++) {
+            int i = offset + j;
+            int note = i >= split;
+            if (i == split) {
+                float phase = 2.0f * (float)M_PI * frequencies[1] * split / AUDIO_SAMPLE_RATE;
+                sine = sinf(phase);
+                cosine = cosf(phase);
+            }
+            float envelope = note ? 1.0f - (float)(i - split) / (total - split)
+                                  : 1.0f - taper * (float)i / split;
+            int16_t value = (int16_t)(amplitude * envelope * sine);
+            stereo[j * 2] = stereo[j * 2 + 1] = value;
+            float next_sine = sine * cos_step[note] + cosine * sin_step[note];
+            cosine = cosine * cos_step[note] - sine * sin_step[note];
+            sine = next_sine;
         }
-
-        int16_t val = (int16_t)(amp * sinf(2.0f * (float)M_PI * freq * t));
-        stereo_buf[i * 2] = val;
-        stereo_buf[i * 2 + 1] = val;
+        esp_codec_dev_write(s_spk_dev, stereo, count * 2 * sizeof(int16_t));
     }
-
-    if (xSemaphoreTake(s_spk_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        esp_codec_dev_write(s_spk_dev, stereo_buf, num_samples * 2 * sizeof(int16_t));
-        xSemaphoreGive(s_spk_mutex);
-    }
-    free(stereo_buf);
+    xSemaphoreGive(s_spk_mutex);
     vTaskDelay(pdMS_TO_TICKS(120));
     s_chime_playing = false;
     s_speaker_active = false;
 }
 
-/* Distinctive pleasant double-ring when subsequent command is recognized & executed (C6 -> G6) */
+/* Soft wake bell: A5 -> E6, 180 ms. */
+void audio_play_soft_wake_ring(void)
+{
+    audio_play_ring(false);
+}
+
+/* Confirmation bell: C6 -> G6, 200 ms. */
 void audio_play_confirm_ring(void)
 {
-    if (!s_spk_dev || !s_spk_mutex) return;
-    s_chime_playing = true;
-    s_speaker_active = true;
-
-    const int num_samples = (int)(AUDIO_SAMPLE_RATE * 0.20f); // 200ms
-    int16_t *stereo_buf = malloc(num_samples * 2 * sizeof(int16_t));
-    if (!stereo_buf) {
-        s_chime_playing = false;
-        s_speaker_active = false;
-        return;
-    }
-
-    for (int i = 0; i < num_samples; i++) {
-        float t = (float)i / (float)AUDIO_SAMPLE_RATE;
-        float freq;
-        float amp = 9500.0f; // Moderate, clear tone
-
-        if (t < 0.09f) {
-            freq = 1046.50f; // C6
-            amp *= (1.0f - (t / 0.09f) * 0.2f);
-        } else {
-            freq = 1567.98f; // G6 (bright affirmative bell)
-            amp *= (1.0f - ((t - 0.09f) / 0.11f));
-        }
-
-        int16_t val = (int16_t)(amp * sinf(2.0f * (float)M_PI * freq * t));
-        stereo_buf[i * 2] = val;
-        stereo_buf[i * 2 + 1] = val;
-    }
-
-    if (xSemaphoreTake(s_spk_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        esp_codec_dev_write(s_spk_dev, stereo_buf, num_samples * 2 * sizeof(int16_t));
-        xSemaphoreGive(s_spk_mutex);
-    }
-    free(stereo_buf);
-    vTaskDelay(pdMS_TO_TICKS(120));
-    s_chime_playing = false;
-    s_speaker_active = false;
+    audio_play_ring(true);
 }
 
 void audio_play_chime(void)
@@ -158,7 +140,9 @@ static void audio_spk_task(void *pvParameters)
     while (1) {
         size_t item_size = 0;
         /* Pull up to 512 mono samples (1024 bytes) from ring buffer */
-        void *data = xRingbufferReceiveUpTo(s_spk_ringbuf, &item_size, pdMS_TO_TICKS(20), 1024);
+        /* Incoming PCM wakes the task immediately; no polling while silent. */
+        TickType_t wait = s_speaker_active ? pdMS_TO_TICKS(300) : portMAX_DELAY;
+        void *data = xRingbufferReceiveUpTo(s_spk_ringbuf, &item_size, wait, 1024);
         if (data && item_size > 0) {
             s_speaker_active = true;
             s_last_spk_play_ticks = xTaskGetTickCount();
@@ -300,6 +284,8 @@ static void audio_mic_task(void *pvParameters)
         int64_t sum_sq = 0;
         for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
             int32_t ac = (int32_t)s_mono_buf[i] - dc_offset;
+            if (ac > 32767) ac = 32767;
+            if (ac < -32768) ac = -32768;
             s_mono_buf[i] = (int16_t)ac;
             sum_sq += ac * ac;
         }
