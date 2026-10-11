@@ -17,3 +17,19 @@ OODA - Observe, Orient, Decide, Act.
 **Category:** leadership
 
 **Source:** https://youtu.be/dIYmzf21d1g?si=rOxdxNzohowzlj9_
+
+## 3
+
+Think ahead to what those failures might be, to put systems in place that will help minimize the damages, or to prevent the bad things from happening in the first place
+
+**Category:** risk-management
+
+**Source:** https://youtu.be/8jPQjjsBbIc?is=LepOIdD09ipqJLP3
+
+## 4
+
+We don't know our minds are cloudy when they are cloudy
+
+**Category:** self-awareness
+
+**Source:** https://youtu.be/8jPQjjsBbIc?is=LepOIdD09ipqJLP3
