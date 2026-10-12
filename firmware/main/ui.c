@@ -1,11 +1,13 @@
 #include "ui.h"
 #include "telemetry.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "esp_random.h"
 #include "quotes.h"
 #include "nvs_flash.h"
@@ -36,9 +38,14 @@ static lv_obj_t *s_quote_text = NULL;
 static lv_obj_t *s_quote_category = NULL;
 
 static int s_quote_index = -1;
+static size_t *s_quote_order = NULL;
+static size_t s_quotes_remaining = 0;
 
 static void ui_load_screen(lv_obj_t *screen)
 {
+    if (screen != s_scr_quotes) {
+        s_quotes_remaining = 0;
+    }
     lv_scr_load(screen);
     if (s_ui_timer) {
         lv_timer_set_period(s_ui_timer, screen == s_scr_idle ? 40 : 200);
@@ -358,17 +365,26 @@ void ui_show_ai_mode(bool show)
 static int s_current_brightness = 50;
 static int64_t s_last_night_touch_us = 0;
 
-/* Top-Left: open a quote, or choose a different random quote. */
+/* Top-Left: draw without replacement until every quote has been shown. */
 static void quad_top_left_cb(lv_event_t *e)
 {
     (void)e;
     if (deskpet_quote_count > 0) {
-        /* Pick among all entries except the currently displayed one. */
-        int choices = deskpet_quote_count - (s_quote_index >= 0 && deskpet_quote_count > 1 ? 1 : 0);
-        int next = (int)(esp_random() % (uint32_t)choices);
-        if (deskpet_quote_count > 1 && s_quote_index >= 0 && next >= s_quote_index) {
-            next++;
+        bool new_round = s_quotes_remaining == 0;
+        if (new_round) {
+            for (size_t i = 0; i < deskpet_quote_count; i++) {
+                s_quote_order[i] = i;
+            }
+            s_quotes_remaining = deskpet_quote_count;
         }
+        /* Avoid repeating the last card at a round/session boundary. */
+        size_t choices = s_quotes_remaining;
+        bool skip_previous = new_round && s_quote_index >= 0 && choices > 1;
+        if (skip_previous) choices--;
+        size_t pick = esp_random() % choices;
+        if (skip_previous && pick >= (size_t)s_quote_index) pick++;
+        int next = (int)s_quote_order[pick];
+        s_quote_order[pick] = s_quote_order[--s_quotes_remaining];
         s_quote_index = next;
         lv_label_set_text_static(s_quote_text, deskpet_quotes[next].text);
         lv_label_set_text_static(s_quote_category, deskpet_quotes[next].category);
@@ -749,6 +765,10 @@ static void create_ai_screen(void)
 
 static void create_quotes_screen(void)
 {
+    if (deskpet_quote_count > 0) {
+        s_quote_order = malloc(deskpet_quote_count * sizeof(*s_quote_order));
+        ESP_ERROR_CHECK(s_quote_order ? ESP_OK : ESP_ERR_NO_MEM);
+    }
     s_scr_quotes = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_scr_quotes, lv_color_hex(0x101820), 0);
     lv_obj_set_style_bg_opa(s_scr_quotes, LV_OPA_COVER, 0);

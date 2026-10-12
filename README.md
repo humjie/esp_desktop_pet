@@ -71,7 +71,10 @@ The 2.4" display (GT911 capacitive touch) features 3 invisible hotzones:
 
 While viewing a quote, tapping anywhere outside the top-left area returns directly
 to the main pet screen. It does not activate night mode or the status dashboard.
-With two quotes, successive cards alternate. The home button also returns to the pet.
+Each quote appears once in random order before a new round starts, with no
+back-to-back repeats between rounds. Leaving the quote screen ends the session;
+reopening it starts a fresh round. With two quotes, successive cards alternate.
+The home button also returns to the pet.
 RGB lighting remains available through voice commands.
 
 ### Quote collection
