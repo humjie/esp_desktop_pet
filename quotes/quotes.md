@@ -36,7 +36,7 @@ We don't know our minds are cloudy when they are cloudy
 
 ## 5
 
-Build something valuable that nobody else is building.
+Copying successful founders is not a formula for success. Ask what valuable business nobody is building.
 
 **Category:** entrepreneurship
 
