@@ -36,7 +36,7 @@ We don't know our minds are cloudy when they are cloudy
 
 ## 5
 
-Copying successful founders is not a formula for success. Ask what valuable business nobody is building.
+Build something valuable that nobody else is building.
 
 **Category:** entrepreneurship
 
@@ -44,7 +44,7 @@ Copying successful founders is not a formula for success. Ask what valuable busi
 
 ## 6
 
-Aim for Monopoly through radical differentiation. Build a unique business that retains the value it creates.
+Aim for Monopoly: build something so unique that customers have no close alternative.
 
 **Category:** business-strategy
 
@@ -52,7 +52,7 @@ Aim for Monopoly through radical differentiation. Build a unique business that r
 
 ## 7
 
-Do not confuse winning with doing worthwhile work. Rivalry can sharpen skills while narrowing your focus to beating peers.
+Focus on work that matters. Chasing wins can distract you from creating real value.
 
 **Category:** self-awareness
 
@@ -60,7 +60,7 @@ Do not confuse winning with doing worthwhile work. Rivalry can sharpen skills wh
 
 ## 8
 
-Look for discoverable secrets: hard problems between obvious knowledge and impossible mysteries that effort can solve.
+Find useful ideas others have missed. There are still problems waiting to be solved.
 
 **Category:** innovation
 
@@ -68,7 +68,7 @@ Look for discoverable secrets: hard problems between obvious knowledge and impos
 
 ## 9
 
-Progress requires invention as well as expansion. Spreading existing solutions is one to many; creating new capabilities is zero to one.
+Inventing something new takes us from zero to one. Sharing it takes us from one to many.
 
 **Category:** innovation
 
