@@ -33,3 +33,43 @@ We don't know our minds are cloudy when they are cloudy
 **Category:** self-awareness
 
 **Source:** https://youtu.be/8jPQjjsBbIc?is=LepOIdD09ipqJLP3
+
+## 5
+
+Copying successful founders is not a formula for success. Ask what valuable business nobody is building.
+
+**Category:** entrepreneurship
+
+**Source:** https://www.youtube.com/watch?v=rFZrL1RiuVI
+
+## 6
+
+Aim for Monopoly through radical differentiation. Build a unique business that retains the value it creates.
+
+**Category:** business-strategy
+
+**Source:** https://www.youtube.com/watch?v=rFZrL1RiuVI
+
+## 7
+
+Do not confuse winning with doing worthwhile work. Rivalry can sharpen skills while narrowing your focus to beating peers.
+
+**Category:** self-awareness
+
+**Source:** https://www.youtube.com/watch?v=rFZrL1RiuVI
+
+## 8
+
+Look for discoverable secrets: hard problems between obvious knowledge and impossible mysteries that effort can solve.
+
+**Category:** innovation
+
+**Source:** https://www.youtube.com/watch?v=rFZrL1RiuVI
+
+## 9
+
+Progress requires invention as well as expansion. Spreading existing solutions is one to many; creating new capabilities is zero to one.
+
+**Category:** innovation
+
+**Source:** https://www.youtube.com/watch?v=rFZrL1RiuVI
