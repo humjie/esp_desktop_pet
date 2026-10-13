@@ -52,7 +52,7 @@ Aim for Monopoly: build something so unique that customers have no close alterna
 
 ## 7
 
-Focus on work that matters. Chasing wins can distract you from creating real value.
+Rivalry can sharpen skills while narrowing your attention to beating peers.
 
 **Category:** self-awareness
 
@@ -60,7 +60,7 @@ Focus on work that matters. Chasing wins can distract you from creating real val
 
 ## 8
 
-Find useful ideas others have missed. There are still problems waiting to be solved.
+Look for discoverable “secrets.” The best opportunities sit between obvious knowledge and impossible mysteries—hard problems that effort can solve.
 
 **Category:** innovation
 
