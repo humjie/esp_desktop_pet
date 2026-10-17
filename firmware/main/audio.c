@@ -39,6 +39,7 @@ static char s_b64_buf[1400];
 static volatile bool s_speaker_active = false;
 static volatile bool s_chime_playing = false;
 static volatile bool s_is_music_mode = false;
+static volatile bool s_mic_enabled = false;
 static volatile uint32_t s_spk_cur_rms = 0;
 static volatile TickType_t s_last_spk_play_ticks = 0;
 static int s_spk_volume = 70; // 70% volume for clean audio without mic saturation
@@ -128,6 +129,17 @@ void audio_set_music_mode(bool enable)
 bool audio_is_music_mode(void)
 {
     return s_is_music_mode;
+}
+
+void audio_set_mic_enabled(bool enable)
+{
+    s_mic_enabled = enable;
+    ESP_LOGI(TAG, "Microphone capture & VAD %s", enable ? "ENABLED" : "DISABLED");
+}
+
+bool audio_is_mic_enabled(void)
+{
+    return s_mic_enabled;
 }
 
 static void audio_spk_task(void *pvParameters)
@@ -246,6 +258,18 @@ static void audio_mic_task(void *pvParameters)
     int preroll_idx = 0;
 
     while (1) {
+        if (!s_mic_enabled) {
+            if (is_recording) {
+                is_recording = false;
+                silence_count = 0;
+                total_frames = 0;
+                printf("AUD,END\n");
+                fflush(stdout);
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         /* Only pause microphone during short 180ms chime tone playback */
         if (s_chime_playing) {
             vTaskDelay(pdMS_TO_TICKS(20));

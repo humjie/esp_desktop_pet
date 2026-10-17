@@ -73,3 +73,11 @@ Inventing something new takes us from zero to one. Sharing it takes us from one 
 **Category:** innovation
 
 **Source:** https://www.youtube.com/watch?v=rFZrL1RiuVI
+
+## 10
+
+How to start a clear conversation? TIP - Topic, Intent, Point
+
+**Category:** communication
+
+**Source:** https://youtu.be/CKAyfGItpgg?is=z_8liFrzwWezMF3a

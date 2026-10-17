@@ -52,6 +52,26 @@ static void handle_host_command(const char *cmd)
         return;
     }
 
+    if (strncmp(cmd, "CMD,MIC,", 8) == 0) {
+        const char *val = cmd + 8;
+        if (strcmp(val, "0") == 0 || strcasecmp(val, "DISABLE") == 0 || strcasecmp(val, "OFF") == 0) {
+            audio_set_mic_enabled(false);
+        } else if (strcmp(val, "1") == 0 || strcasecmp(val, "ENABLE") == 0 || strcasecmp(val, "ON") == 0) {
+            audio_set_mic_enabled(true);
+        }
+        return;
+    }
+
+    if (strncmp(cmd, "CMD,MIC_DISABLE", 15) == 0 || strncmp(cmd, "CMD,VOICE_DISABLE", 17) == 0) {
+        audio_set_mic_enabled(false);
+        return;
+    }
+
+    if (strncmp(cmd, "CMD,MIC_ENABLE", 14) == 0 || strncmp(cmd, "CMD,VOICE_ENABLE", 16) == 0) {
+        audio_set_mic_enabled(true);
+        return;
+    }
+
     // Format: CMD,VOICE_RESP,<action>,<text>
     if (strncmp(cmd, "CMD,VOICE_RESP,", 15) == 0) {
         char buf[128];

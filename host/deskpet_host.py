@@ -48,6 +48,7 @@ DEFAULTS = {
     "baudrate": "115200",
     "interval_s": "1.0",
     "serial_write_timeout_s": "2.0",
+    "voice_activation": "false",
     "speech_threads": "4",
     "tts_threads": "6",
     "tts_memory_arena": "false",
@@ -73,6 +74,13 @@ def load_config():
 
 
 CFG = load_config()
+
+
+def is_voice_enabled():
+    val = CFG.get("voice_activation", CFG.get("voice_enabled", "false"))
+    return str(val).strip().lower() in ("true", "1", "yes", "on")
+
+
 PORT = CFG["serial_port"]
 BAUD = int(CFG["baudrate"])
 INTERVAL = float(CFG["interval_s"])
@@ -407,19 +415,22 @@ def load_voice_models():
     """Keep models warm for immediate commands; all inference stays on the CPU."""
     global s_whisper_model, s_piper_voice, np
     import numpy as np
-    try:
-        from faster_whisper import WhisperModel
-        log.info("Loading CPU speech recognition (tiny.en, int8)...")
-        options = dict(device="cpu", compute_type="int8",
-                       cpu_threads=max(1, int(CFG["speech_threads"])), num_workers=1)
+    if not is_voice_enabled():
+        log.info("Voice activation is disabled by configuration; skipping Whisper speech model.")
+    else:
         try:
-            s_whisper_model = WhisperModel("tiny.en", local_files_only=True, **options)
-        except FileNotFoundError:
-            # Only the initial installation needs a model download.
-            s_whisper_model = WhisperModel("tiny.en", **options)
-        log.info("Whisper model ready.")
-    except Exception as error:
-        log.error("Failed to load Whisper model: %s", error)
+            from faster_whisper import WhisperModel
+            log.info("Loading CPU speech recognition (tiny.en, int8)...")
+            options = dict(device="cpu", compute_type="int8",
+                           cpu_threads=max(1, int(CFG["speech_threads"])), num_workers=1)
+            try:
+                s_whisper_model = WhisperModel("tiny.en", local_files_only=True, **options)
+            except FileNotFoundError:
+                # Only the initial installation needs a model download.
+                s_whisper_model = WhisperModel("tiny.en", **options)
+            log.info("Whisper model ready.")
+        except Exception as error:
+            log.error("Failed to load Whisper model: %s", error)
 
     try:
         if not os.path.exists(PIPER_MODEL_PATH):
@@ -1003,7 +1014,7 @@ def serial_reader_loop(ser, stop_event):
                 del pending[:end + 1]
                 if line.startswith(b"AUD,START,"):
                     audio.clear()
-                    recording = True
+                    recording = is_voice_enabled()
                 elif line.startswith(b"AUD,D,") and recording:
                     try:
                         chunk = base64.b64decode(line[6:], validate=True)
@@ -1082,6 +1093,7 @@ def main():
                         ser = open_serial()
                         s_active_ser = ser
                         if ser is not None:
+                            send_device_raw_cmd("CMD,MIC,1" if is_voice_enabled() else "CMD,MIC,0")
                             rx_stop_event = threading.Event()
                             rx_thread = threading.Thread(target=serial_reader_loop,
                                 args=(ser, rx_stop_event), name="deskpet-serial", daemon=True)

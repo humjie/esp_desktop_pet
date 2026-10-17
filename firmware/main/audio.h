@@ -63,6 +63,16 @@ int audio_get_spk_volume(void);
  */
 bool audio_is_speaker_active(void);
 
+/**
+ * @brief Enable or disable microphone recording and VAD voice activation.
+ */
+void audio_set_mic_enabled(bool enable);
+
+/**
+ * @brief Check if microphone recording and VAD voice activation is enabled.
+ */
+bool audio_is_mic_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif

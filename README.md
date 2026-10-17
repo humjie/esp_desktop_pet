@@ -181,6 +181,7 @@ Optional settings in `~/.config/deskpet/deskpet.conf`:
 
 ```ini
 [deskpet]
+voice_activation = false
 interval_s = 1.0
 speech_threads = 4
 tts_threads = 6
@@ -189,7 +190,10 @@ telemetry_log_interval_s = 60.0
 log_level = INFO
 ```
 
-Restart `deskpet.service` after changing these settings. Enabling
+Restart `deskpet.service` after changing these settings. Set `voice_activation = true`
+to enable microphone capture, on-chip VAD, and local Whisper speech recognition. When
+disabled (the default), microphone streaming is stopped on the device, Whisper is not
+loaded, and no speech processing runs on the PC CPU. Enabling
 `tts_memory_arena` retains more inference workspace for reuse; the default frees
 that workspace between requests to reduce resident memory. Thread settings can
 be tuned for another CPU. Models and real-time audio buffers remain resident

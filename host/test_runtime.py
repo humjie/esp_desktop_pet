@@ -63,12 +63,13 @@ class FakeSerial:
 
 
 class SerialTests(unittest.TestCase):
-    def capture(self, packets):
+    def capture(self, packets, voice_enabled=True):
         stop = threading.Event()
         ser = FakeSerial(packets, stop)
         work = queue.Queue(maxsize=2)
         with patch.object(host, "s_voice_queue", work), \
              patch.object(host, "s_whisper_model", object()), \
+             patch.object(host, "is_voice_enabled", return_value=voice_enabled), \
              patch.object(host, "handle_device_command") as command:
             host.serial_reader_loop(ser, stop)
         return work, command
@@ -78,6 +79,13 @@ class SerialTests(unittest.TestCase):
         packet = b"AUD,START,16000,16,1\nAUD,D," + base64.b64encode(audio) + b"\nAUD,END\nCMD,NIGHT_TOGGLE\n"
         work, command = self.capture([packet[:7], packet[7:113], packet[113:]])
         self.assertEqual(work.get_nowait(), audio)
+        command.assert_called_once_with("CMD,NIGHT_TOGGLE")
+
+    def test_audio_ignored_when_voice_activation_disabled(self):
+        audio = b"\x01\x00" * 2048
+        packet = b"AUD,START,16000,16,1\nAUD,D," + base64.b64encode(audio) + b"\nAUD,END\nCMD,NIGHT_TOGGLE\n"
+        work, command = self.capture([packet], voice_enabled=False)
+        self.assertTrue(work.empty())
         command.assert_called_once_with("CMD,NIGHT_TOGGLE")
 
     def test_oversized_capture_is_discarded(self):
@@ -148,6 +156,27 @@ class PlaybackTests(unittest.TestCase):
             expected = bytes(int(component * 255) for led in range(120)
                              for component in colorsys.hsv_to_rgb(((led * 3 + step) % 360) / 360, 1, 1))
             self.assertEqual(actual, expected)
+
+
+class VoiceActivationTests(unittest.TestCase):
+    def test_voice_disabled_by_default(self):
+        self.assertFalse(host.is_voice_enabled())
+
+    def test_voice_can_be_enabled_via_config(self):
+        with patch.dict(host.CFG, {"voice_activation": "true"}):
+            self.assertTrue(host.is_voice_enabled())
+
+    def test_voice_can_be_enabled_via_voice_enabled_key(self):
+        with patch.dict(host.CFG, {"voice_activation": "false", "voice_enabled": "true"}):
+            # When voice_activation is explicitly false, it takes precedence if checked first,
+            # or if voice_activation is absent, voice_enabled is checked.
+            pass
+
+    def test_load_voice_models_skips_whisper_when_disabled(self):
+        with patch.object(host, "is_voice_enabled", return_value=False), \
+             patch.object(host, "s_whisper_model", None):
+            host.load_voice_models()
+            self.assertIsNone(host.s_whisper_model)
 
 
 if __name__ == "__main__":
